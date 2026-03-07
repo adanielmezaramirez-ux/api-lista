@@ -10,7 +10,7 @@ const app = express();
 
 // Configurar CORS
 app.use(cors({
-  origin: 'http://localhost:5173', // URL de tu frontend de Vite
+  origin: 'https://front-lista.vercel.app',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
