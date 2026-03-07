@@ -10,8 +10,8 @@ const app = express();
 
 // Configurar CORS
 app.use(cors({
-  //origin: 'https://front-lista.vercel.app',
-  origin: 'http://localhost:3001',
+  origin: 'https://front-lista.vercel.app',
+  //origin: 'http://localhost:3001',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
