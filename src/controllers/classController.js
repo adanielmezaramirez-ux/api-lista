@@ -92,7 +92,7 @@ exports.getClassById = async (req, res) => {
 // Marcar asistencia (solo maestro)
 exports.marcarAsistencia = async (req, res) => {
   try {
-    const { claseId, alumnoId, fecha, presente } = req.body;
+    const { claseId, alumnoId, fecha, presente, horarioId } = req.body;
 
     // Verificar que el maestro tiene acceso a esta clase
     const [acceso] = await db.execute(
@@ -104,21 +104,33 @@ exports.marcarAsistencia = async (req, res) => {
       return res.status(403).json({ error: "No tienes permiso para esta clase" });
     }
 
-    // Verificar que el alumno está inscrito en la clase
+    // Verificar que el alumno está inscrito
     const [inscripcion] = await db.execute(
       "SELECT * FROM clase_alumnos WHERE clase_id = ? AND alumno_id = ?",
       [claseId, alumnoId]
     );
 
     if (inscripcion.length === 0) {
-      return res.status(400).json({ error: "El alumno no está inscrito en esta clase" });
+      return res.status(400).json({ error: "El alumno no está inscrito" });
     }
 
+    // Si se proporciona horarioId, verificar que pertenece a la clase
+    if (horarioId) {
+      const [horario] = await db.execute(
+        "SELECT * FROM horarios_clase WHERE id = ? AND clase_id = ?",
+        [horarioId, claseId]
+      );
+      if (horario.length === 0) {
+        return res.status(400).json({ error: "Horario no válido para esta clase" });
+      }
+    }
+
+    // Insertar o actualizar asistencia
     await db.execute(
-      `INSERT INTO asistencia (clase_id, alumno_id, fecha, presente)
-       VALUES (?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE presente = ?`,
-      [claseId, alumnoId, fecha, presente, presente]
+      `INSERT INTO asistencia (clase_id, horario_id, alumno_id, fecha, presente)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE presente = ?, horario_id = ?`,
+      [claseId, horarioId || null, alumnoId, fecha, presente, presente, horarioId || null]
     );
 
     res.json({ message: "Asistencia registrada" });
