@@ -1,4 +1,4 @@
-// src/routes/classRoutes.js (versión actualizada para maestros)
+// src/routes/classRoutes.js
 const express = require("express");
 const router = express.Router();
 const { protect, isMaestro } = require("../middleware/authMiddleware");

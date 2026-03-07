@@ -1,4 +1,4 @@
-// src/controllers/adminController.js (versión actualizada)
+// src/controllers/adminController.js
 const db = require("../config/db");
 const bcrypt = require("bcrypt");
 const ExcelJS = require('exceljs');
@@ -91,34 +91,130 @@ exports.assignRole = async (req, res) => {
   }
 };
 
-// Crear una nueva clase (admin)
+// Obtener todas las clases con sus horarios
+exports.getAllClasses = async (req, res) => {
+  try {
+    const [clases] = await db.execute(`
+      SELECT 
+        c.id,
+        c.nombre,
+        (
+          SELECT JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'id', h.id,
+              'dia_semana', h.dia_semana,
+              'hora_inicio', h.hora_inicio,
+              'hora_fin', h.hora_fin
+            )
+          )
+          FROM horarios_clase h
+          WHERE h.clase_id = c.id
+          ORDER BY h.dia_semana, h.hora_inicio
+        ) as horarios,
+        (
+          SELECT JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'id', u.id,
+              'nombre', CONCAT(u.firstname, ' ', u.lastname),
+              'email', u.email
+            )
+          )
+          FROM clase_maestros cm
+          JOIN mdlwa_user u ON cm.maestro_id = u.id
+          WHERE cm.clase_id = c.id
+        ) as maestros,
+        (
+          SELECT JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'id', u.id,
+              'nombre', CONCAT(u.firstname, ' ', u.lastname),
+              'email', u.email
+            )
+          )
+          FROM clase_alumnos ca
+          JOIN mdlwa_user u ON ca.alumno_id = u.id
+          WHERE ca.clase_id = c.id
+        ) as alumnos,
+        (SELECT COUNT(*) FROM clase_alumnos ca WHERE ca.clase_id = c.id) as total_alumnos
+      FROM clases c
+      ORDER BY c.nombre
+    `);
+
+    res.json(clases.map(clase => ({
+      ...clase,
+      horarios: clase.horarios || [],
+      maestros: clase.maestros || [],
+      alumnos: clase.alumnos || []
+    })));
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
+// Crear una nueva clase con múltiples horarios
 exports.createClass = async (req, res) => {
   try {
-    const { nombre, horario, dias, maestrosIds } = req.body;
+    const { nombre, horarios, maestrosIds } = req.body;
 
     if (!nombre) {
       return res.status(400).json({ error: "El nombre de la clase es requerido" });
     }
 
-    // Iniciar transacción
+    if (!horarios || !Array.isArray(horarios) || horarios.length === 0) {
+      return res.status(400).json({ error: "Se requiere al menos un horario" });
+    }
+
+    // Validar horarios
+    for (const horario of horarios) {
+      if (!horario.dia_semana || !horario.hora_inicio || !horario.hora_fin) {
+        return res.status(400).json({ 
+          error: "Cada horario debe tener dia_semana, hora_inicio y hora_fin" 
+        });
+      }
+      
+      if (horario.dia_semana < 1 || horario.dia_semana > 7) {
+        return res.status(400).json({ 
+          error: "dia_semana debe ser entre 1 (Lunes) y 7 (Domingo)" 
+        });
+      }
+
+      // Validar formato de hora (HH:MM:SS)
+      const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/;
+      if (!timeRegex.test(horario.hora_inicio) || !timeRegex.test(horario.hora_fin)) {
+        return res.status(400).json({ 
+          error: "Formato de hora inválido. Use HH:MM:SS" 
+        });
+      }
+    }
+
     const connection = await db.getConnection();
     await connection.beginTransaction();
 
     try {
       // Insertar clase
       const [result] = await connection.execute(
-        `INSERT INTO clases (nombre, horario, dias, created_by) 
-         VALUES (?, ?, ?, ?)`,
-        [nombre, horario || null, dias || null, req.user.id]
+        `INSERT INTO clases (nombre, created_by) VALUES (?, ?)`,
+        [nombre, req.user.id]
       );
 
       const claseId = result.insertId;
+
+      // Insertar horarios
+      for (const horario of horarios) {
+        await connection.execute(
+          `INSERT INTO horarios_clase (clase_id, dia_semana, hora_inicio, hora_fin) 
+           VALUES (?, ?, ?, ?)`,
+          [claseId, horario.dia_semana, horario.hora_inicio, horario.hora_fin]
+        );
+      }
 
       // Asignar maestros si se proporcionaron
       if (maestrosIds && Array.isArray(maestrosIds) && maestrosIds.length > 0) {
         for (const maestroId of maestrosIds) {
           await connection.execute(
-            "INSERT INTO clase_maestros (clase_id, maestro_id) VALUES (?, ?)",
+            "INSERT IGNORE INTO clase_maestros (clase_id, maestro_id) VALUES (?, ?)",
             [claseId, maestroId]
           );
         }
@@ -126,22 +222,44 @@ exports.createClass = async (req, res) => {
 
       await connection.commit();
 
-      const [nuevaClase] = await db.execute(
-        `SELECT c.id, c.nombre, c.horario, c.dias,
-                JSON_ARRAYAGG(
-                  JSON_OBJECT('id', u.id, 'nombre', CONCAT(u.firstname, ' ', u.lastname))
-                ) as maestros
-         FROM clases c
-         LEFT JOIN clase_maestros cm ON c.id = cm.clase_id
-         LEFT JOIN mdlwa_user u ON cm.maestro_id = u.id
-         WHERE c.id = ?
-         GROUP BY c.id`,
-        [claseId]
-      );
+      // Obtener la clase creada con sus horarios y maestros
+      const [nuevaClase] = await db.execute(`
+        SELECT 
+          c.id, 
+          c.nombre,
+          IFNULL(
+            JSON_ARRAYAGG(
+              JSON_OBJECT(
+                'id', h.id,
+                'dia_semana', h.dia_semana,
+                'hora_inicio', h.hora_inicio,
+                'hora_fin', h.hora_fin
+              )
+            ), JSON_ARRAY()
+          ) as horarios,
+          IFNULL(
+            JSON_ARRAYAGG(
+              JSON_OBJECT(
+                'id', u.id,
+                'nombre', CONCAT(u.firstname, ' ', u.lastname)
+              )
+            ), JSON_ARRAY()
+          ) as maestros
+        FROM clases c
+        LEFT JOIN horarios_clase h ON c.id = h.clase_id
+        LEFT JOIN clase_maestros cm ON c.id = cm.clase_id
+        LEFT JOIN mdlwa_user u ON cm.maestro_id = u.id
+        WHERE c.id = ?
+        GROUP BY c.id
+      `, [claseId]);
 
       res.status(201).json({
         message: "Clase creada exitosamente",
-        clase: nuevaClase[0]
+        clase: {
+          ...nuevaClase[0],
+          horarios: nuevaClase[0].horarios || [],
+          maestros: nuevaClase[0].maestros || []
+        }
       });
 
     } catch (error) {
@@ -157,7 +275,81 @@ exports.createClass = async (req, res) => {
   }
 };
 
-// Asignar maestros a una clase (admin)
+// Actualizar horarios de una clase
+exports.updateHorarios = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { horarios } = req.body;
+
+    if (!horarios || !Array.isArray(horarios)) {
+      return res.status(400).json({ error: "Se requiere un array de horarios" });
+    }
+
+    // Validar horarios
+    for (const horario of horarios) {
+      if (!horario.dia_semana || !horario.hora_inicio || !horario.hora_fin) {
+        return res.status(400).json({ 
+          error: "Cada horario debe tener dia_semana, hora_inicio y hora_fin" 
+        });
+      }
+      
+      if (horario.dia_semana < 1 || horario.dia_semana > 7) {
+        return res.status(400).json({ 
+          error: "dia_semana debe ser entre 1 (Lunes) y 7 (Domingo)" 
+        });
+      }
+    }
+
+    // Verificar que la clase existe
+    const [clase] = await db.execute(
+      "SELECT id FROM clases WHERE id = ?",
+      [id]
+    );
+
+    if (clase.length === 0) {
+      return res.status(404).json({ error: "Clase no encontrada" });
+    }
+
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Eliminar horarios existentes
+      await connection.execute(
+        "DELETE FROM horarios_clase WHERE clase_id = ?",
+        [id]
+      );
+
+      // Insertar nuevos horarios
+      for (const horario of horarios) {
+        await connection.execute(
+          `INSERT INTO horarios_clase (clase_id, dia_semana, hora_inicio, hora_fin) 
+           VALUES (?, ?, ?, ?)`,
+          [id, horario.dia_semana, horario.hora_inicio, horario.hora_fin]
+        );
+      }
+
+      await connection.commit();
+
+      res.json({ 
+        message: "Horarios actualizados correctamente",
+        horarios: horarios
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
+// Asignar maestros a una clase
 exports.asignarMaestros = async (req, res) => {
   try {
     const { id } = req.params;
@@ -216,7 +408,7 @@ exports.asignarMaestros = async (req, res) => {
   }
 };
 
-// Quitar maestro de una clase (admin)
+// Quitar maestro de una clase
 exports.removerMaestro = async (req, res) => {
   try {
     const { id, maestroId } = req.params;
@@ -238,7 +430,7 @@ exports.removerMaestro = async (req, res) => {
   }
 };
 
-// Asignar alumnos a una clase (admin)
+// Asignar alumnos a una clase
 exports.asignarAlumnos = async (req, res) => {
   try {
     const { id } = req.params;
@@ -379,7 +571,9 @@ exports.descargarReporteExcel = async (req, res) => {
     
     const presentes = asistencias.filter(a => a.presente).length;
     worksheet.addRow(['Total asistencias:', presentes, '', '', '']);
-    worksheet.addRow(['Porcentaje asistencia:', `${((presentes / asistencias.length) * 100).toFixed(2)}%`, '', '', '']);
+    if (asistencias.length > 0) {
+      worksheet.addRow(['Porcentaje asistencia:', `${((presentes / asistencias.length) * 100).toFixed(2)}%`, '', '', '']);
+    }
 
     // Configurar respuesta
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -450,7 +644,12 @@ exports.descargarReportePDF = async (req, res) => {
 
     // Filtros aplicados
     doc.fontSize(10).text(`Fecha de generación: ${new Date().toLocaleDateString()}`, { align: 'right' });
-    if (claseId) doc.text(`Clase ID: ${claseId}`);
+    if (claseId) {
+      const [clase] = await db.execute("SELECT nombre FROM clases WHERE id = ?", [claseId]);
+      if (clase.length > 0) {
+        doc.text(`Clase: ${clase[0].nombre}`);
+      }
+    }
     if (fechaInicio) doc.text(`Desde: ${fechaInicio}`);
     if (fechaFin) doc.text(`Hasta: ${fechaFin}`);
     doc.moveDown();
@@ -500,7 +699,9 @@ exports.descargarReportePDF = async (req, res) => {
     doc.font('Helvetica');
     doc.text(`Total registros: ${asistencias.length}`, 50, yPosition + 40);
     doc.text(`Total asistencias: ${totalPresentes}`, 50, yPosition + 55);
-    doc.text(`Porcentaje asistencia: ${((totalPresentes / asistencias.length) * 100).toFixed(2)}%`, 50, yPosition + 70);
+    if (asistencias.length > 0) {
+      doc.text(`Porcentaje asistencia: ${((totalPresentes / asistencias.length) * 100).toFixed(2)}%`, 50, yPosition + 70);
+    }
 
     doc.end();
 

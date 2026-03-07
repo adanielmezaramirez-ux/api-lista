@@ -93,9 +93,19 @@ exports.login = async (req, res) => {
         SELECT 
           c.id,
           c.nombre,
-          c.horario,
-          c.dias,
-          c.created_by,
+          (
+            SELECT JSON_ARRAYAGG(
+              JSON_OBJECT(
+                'id', h.id,
+                'dia_semana', h.dia_semana,
+                'hora_inicio', h.hora_inicio,
+                'hora_fin', h.hora_fin
+              )
+            )
+            FROM horarios_clase h
+            WHERE h.clase_id = c.id
+            ORDER BY h.dia_semana, h.hora_inicio
+          ) as horarios,
           (
             SELECT JSON_ARRAYAGG(
               JSON_OBJECT(
@@ -127,6 +137,7 @@ exports.login = async (req, res) => {
 
       responseData.clases = clases.map(clase => ({
         ...clase,
+        horarios: clase.horarios || [],
         maestros: clase.maestros || [],
         alumnos: clase.alumnos || []
       }));
@@ -136,8 +147,19 @@ exports.login = async (req, res) => {
         SELECT 
           c.id,
           c.nombre,
-          c.horario,
-          c.dias,
+          (
+            SELECT JSON_ARRAYAGG(
+              JSON_OBJECT(
+                'id', h.id,
+                'dia_semana', h.dia_semana,
+                'hora_inicio', h.hora_inicio,
+                'hora_fin', h.hora_fin
+              )
+            )
+            FROM horarios_clase h
+            WHERE h.clase_id = c.id
+            ORDER BY h.dia_semana, h.hora_inicio
+          ) as horarios,
           (
             SELECT JSON_ARRAYAGG(
               JSON_OBJECT(
@@ -159,6 +181,7 @@ exports.login = async (req, res) => {
 
       responseData.clases = clases.map(clase => ({
         ...clase,
+        horarios: clase.horarios || [],
         alumnos: clase.alumnos || []
       }));
     }

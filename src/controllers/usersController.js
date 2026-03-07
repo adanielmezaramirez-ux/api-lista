@@ -20,30 +20,68 @@ exports.getUserData = async (req, res) => {
     let clases = [];
     
     if (role === 'maestro') {
-      // Si es maestro, obtener clases que enseña
-      [clases] = await db.execute(
-        `SELECT id, nombre, horario, dias
-         FROM clases
-         WHERE maestro_id = ?`,
-        [userId]
-      );
+      // Si es maestro, obtener clases que enseña con horarios
+      [clases] = await db.execute(`
+        SELECT 
+          c.id, 
+          c.nombre,
+          JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'id', h.id,
+              'dia_semana', h.dia_semana,
+              'hora_inicio', h.hora_inicio,
+              'hora_fin', h.hora_fin
+            )
+          ) as horarios
+        FROM clases c
+        LEFT JOIN horarios_clase h ON c.id = h.clase_id
+        JOIN clase_maestros cm ON c.id = cm.clase_id
+        WHERE cm.maestro_id = ?
+        GROUP BY c.id
+        ORDER BY c.nombre
+      `, [userId]);
     } else if (role === 'alumno') {
-      // Si es alumno, obtener clases a las que está inscrito
-      [clases] = await db.execute(
-        `SELECT c.id, c.nombre, c.horario, c.dias,
-                u.firstname as maestro_nombre, u.lastname as maestro_apellido
-         FROM clases c
-         JOIN clase_alumnos ca ON c.id = ca.clase_id
-         JOIN mdlwa_user u ON c.maestro_id = u.id
-         WHERE ca.alumno_id = ?`,
-        [userId]
-      );
+      // Si es alumno, obtener clases a las que está inscrito con horarios y maestros
+      [clases] = await db.execute(`
+        SELECT 
+          c.id, 
+          c.nombre,
+          (
+            SELECT JSON_ARRAYAGG(
+              JSON_OBJECT(
+                'id', h.id,
+                'dia_semana', h.dia_semana,
+                'hora_inicio', h.hora_inicio,
+                'hora_fin', h.hora_fin
+              )
+            )
+            FROM horarios_clase h
+            WHERE h.clase_id = c.id
+          ) as horarios,
+          JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'id', u.id,
+              'nombre', CONCAT(u.firstname, ' ', u.lastname)
+            )
+          ) as maestros
+        FROM clases c
+        JOIN clase_alumnos ca ON c.id = ca.clase_id
+        JOIN clase_maestros cm ON c.id = cm.clase_id
+        JOIN mdlwa_user u ON cm.maestro_id = u.id
+        WHERE ca.alumno_id = ?
+        GROUP BY c.id
+        ORDER BY c.nombre
+      `, [userId]);
     }
 
     res.json({
       userId,
       role,
-      clases
+      clases: clases.map(clase => ({
+        ...clase,
+        horarios: clase.horarios || [],
+        maestros: clase.maestros || []
+      }))
     });
   } catch (error) {
     console.error(error);
@@ -70,14 +108,14 @@ exports.asignarAlumno = async (req, res) => {
       return res.status(404).json({ error: "Alumno no encontrado o no tiene rol de alumno" });
     }
 
-    // Verificar que la clase pertenece al maestro
-    const [clase] = await db.execute(
-      "SELECT maestro_id FROM clases WHERE id = ?",
-      [claseId]
+    // Verificar que el maestro tiene acceso a esta clase
+    const [acceso] = await db.execute(
+      "SELECT * FROM clase_maestros WHERE clase_id = ? AND maestro_id = ?",
+      [claseId, req.user.id]
     );
 
-    if (!clase.length || clase[0].maestro_id !== req.user.id) {
-      return res.status(403).json({ error: "No tienes permiso para asignar a esta clase" });
+    if (acceso.length === 0) {
+      return res.status(403).json({ error: "No tienes permiso para esta clase" });
     }
 
     await db.execute(
@@ -92,18 +130,18 @@ exports.asignarAlumno = async (req, res) => {
   }
 };
 
-// Marcar asistencia
+// Marcar asistencia (solo maestro)
 exports.marcarAsistencia = async (req, res) => {
   try {
     const { claseId, alumnoId, fecha, presente } = req.body;
 
-    // Verificar que la clase pertenece al maestro
-    const [clase] = await db.execute(
-      "SELECT maestro_id FROM clases WHERE id = ?",
-      [claseId]
+    // Verificar que el maestro tiene acceso a esta clase
+    const [acceso] = await db.execute(
+      "SELECT * FROM clase_maestros WHERE clase_id = ? AND maestro_id = ?",
+      [claseId, req.user.id]
     );
 
-    if (!clase.length || clase[0].maestro_id !== req.user.id) {
+    if (acceso.length === 0) {
       return res.status(403).json({ error: "No tienes permiso para esta clase" });
     }
 
@@ -136,13 +174,13 @@ exports.getAlumnosDisponibles = async (req, res) => {
   try {
     const { claseId } = req.params;
 
-    // Verificar que la clase pertenece al maestro
-    const [clase] = await db.execute(
-      "SELECT maestro_id FROM clases WHERE id = ?",
-      [claseId]
+    // Verificar que el maestro tiene acceso a esta clase
+    const [acceso] = await db.execute(
+      "SELECT * FROM clase_maestros WHERE clase_id = ? AND maestro_id = ?",
+      [claseId, req.user.id]
     );
 
-    if (!clase.length || clase[0].maestro_id !== req.user.id) {
+    if (acceso.length === 0) {
       return res.status(403).json({ error: "No tienes permiso" });
     }
 
@@ -155,7 +193,8 @@ exports.getAlumnosDisponibles = async (req, res) => {
        WHERE r.name = 'alumno'
        AND u.id NOT IN (
          SELECT alumno_id FROM clase_alumnos WHERE clase_id = ?
-       )`,
+       )
+       ORDER BY u.firstname, u.lastname`,
       [claseId]
     );
 

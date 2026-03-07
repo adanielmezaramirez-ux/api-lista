@@ -1,26 +1,24 @@
 {
   "name": "api-lista",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "API para sistema de asistencia",
+  "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
-    "dev": "node src/app.js"
+    "dev": "nodemon src/app.js",
+    "test-db": "node src/test-db.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "bcrypt": "^6.0.0",
-    "cors": "^2.8.6",
-    "dotenv": "^17.3.1",
+    "express": "^4.18.2",
+    "mysql2": "^3.6.0",
+    "dotenv": "^16.3.1",
+    "bcrypt": "^5.1.1",
+    "jsonwebtoken": "^9.0.2",
+    "cors": "^2.8.5",
     "exceljs": "^4.4.0",
-    "express": "^5.2.1",
-    "jsonwebtoken": "^9.0.3",
-    "mysql2": "^3.19.0",
-    "pdfkit": "^0.17.2"
+    "pdfkit": "^0.14.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.0.1"
   }
 }

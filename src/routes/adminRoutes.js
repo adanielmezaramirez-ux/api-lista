@@ -1,4 +1,4 @@
-// src/routes/adminRoutes.js (versión actualizada)
+// src/routes/adminRoutes.js
 const express = require("express");
 const router = express.Router();
 const { protect, isAdmin } = require("../middleware/authMiddleware");
@@ -12,8 +12,10 @@ router.use(isAdmin);
 router.get("/users", adminController.getAllUsers);
 router.post("/assign-role", adminController.assignRole);
 
-// Gestión de clases
+// Gestión de clases - VERIFICAR QUE TODOS ESTOS CONTROLADORES EXISTAN
+router.get("/classes", adminController.getAllClasses);
 router.post("/classes", adminController.createClass);
+router.put("/classes/:id/horarios", adminController.updateHorarios);
 router.post("/classes/:id/maestros", adminController.asignarMaestros);
 router.delete("/classes/:id/maestros/:maestroId", adminController.removerMaestro);
 router.post("/classes/:id/alumnos", adminController.asignarAlumnos);

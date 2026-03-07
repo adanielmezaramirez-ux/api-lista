@@ -1,6 +1,6 @@
 // src/app.js
 const express = require("express");
-const cors = require("cors"); // Importar cors
+const cors = require("cors");
 const authRoutes = require("./routes/authRoutes");
 const usersRoutes = require("./routes/usersRoutes");
 const adminRoutes = require("./routes/adminRoutes");
@@ -10,7 +10,8 @@ const app = express();
 
 // Configurar CORS
 app.use(cors({
-  origin: 'https://front-lista.vercel.app',
+  //origin: 'https://front-lista.vercel.app',
+  origin: 'http://localhost:3001',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -40,7 +41,9 @@ app.get("/", (req, res) => {
       admin: {
         usuarios: "GET /admin/users",
         asignarRol: "POST /admin/assign-role",
+        clases: "GET /admin/classes",
         crearClase: "POST /admin/classes",
+        actualizarHorarios: "PUT /admin/classes/:id/horarios",
         asignarMaestros: "POST /admin/classes/:id/maestros",
         quitarMaestro: "DELETE /admin/classes/:id/maestros/:maestroId",
         asignarAlumnos: "POST /admin/classes/:id/alumnos",
