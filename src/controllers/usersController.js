@@ -1,26 +1,21 @@
-// src/controllers/usersController.js
 const db = require("../config/db");
 
-// Obtener info de usuario + sus clases
 exports.getUserData = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Obtener el rol del usuario
-    const [userRole] = await db.execute(
-      `SELECT r.name as role_name
+    const [userRoles] = await db.execute(
+      `SELECT DISTINCT r.name as role_name
        FROM user_roles ur
        JOIN roles r ON ur.role_id = r.id
        WHERE ur.user_id = ?`,
       [userId]
     );
 
-    const role = userRole[0]?.role_name;
-
+    const roles = userRoles.map(r => r.role_name);
     let clases = [];
     
-    if (role === 'maestro') {
-      // Si es maestro, obtener clases que enseña con horarios
+    if (roles.includes('maestro')) {
       [clases] = await db.execute(`
         SELECT 
           c.id, 
@@ -40,8 +35,7 @@ exports.getUserData = async (req, res) => {
         GROUP BY c.id
         ORDER BY c.nombre
       `, [userId]);
-    } else if (role === 'alumno') {
-      // Si es alumno, obtener clases a las que está inscrito con horarios y maestros
+    } else if (roles.includes('alumno')) {
       [clases] = await db.execute(`
         SELECT 
           c.id, 
@@ -76,7 +70,7 @@ exports.getUserData = async (req, res) => {
 
     res.json({
       userId,
-      role,
+      roles,
       clases: clases.map(clase => ({
         ...clase,
         horarios: clase.horarios || [],
@@ -89,12 +83,10 @@ exports.getUserData = async (req, res) => {
   }
 };
 
-// Asignar alumno a clase (solo maestro)
 exports.asignarAlumno = async (req, res) => {
   try {
     const { claseId, alumnoId } = req.body;
 
-    // Verificar que el alumno existe y tiene rol de alumno
     const [alumno] = await db.execute(
       `SELECT u.id 
        FROM mdlwa_user u
@@ -108,7 +100,6 @@ exports.asignarAlumno = async (req, res) => {
       return res.status(404).json({ error: "Alumno no encontrado o no tiene rol de alumno" });
     }
 
-    // Verificar que el maestro tiene acceso a esta clase
     const [acceso] = await db.execute(
       "SELECT * FROM clase_maestros WHERE clase_id = ? AND maestro_id = ?",
       [claseId, req.user.id]
@@ -130,12 +121,10 @@ exports.asignarAlumno = async (req, res) => {
   }
 };
 
-// Marcar asistencia (solo maestro)
 exports.marcarAsistencia = async (req, res) => {
   try {
     const { claseId, alumnoId, fecha, presente } = req.body;
 
-    // Verificar que el maestro tiene acceso a esta clase
     const [acceso] = await db.execute(
       "SELECT * FROM clase_maestros WHERE clase_id = ? AND maestro_id = ?",
       [claseId, req.user.id]
@@ -145,7 +134,6 @@ exports.marcarAsistencia = async (req, res) => {
       return res.status(403).json({ error: "No tienes permiso para esta clase" });
     }
 
-    // Verificar que el alumno está inscrito en la clase
     const [inscripcion] = await db.execute(
       "SELECT * FROM clase_alumnos WHERE clase_id = ? AND alumno_id = ?",
       [claseId, alumnoId]
@@ -169,12 +157,10 @@ exports.marcarAsistencia = async (req, res) => {
   }
 };
 
-// Obtener alumnos disponibles para asignar a una clase
 exports.getAlumnosDisponibles = async (req, res) => {
   try {
     const { claseId } = req.params;
 
-    // Verificar que el maestro tiene acceso a esta clase
     const [acceso] = await db.execute(
       "SELECT * FROM clase_maestros WHERE clase_id = ? AND maestro_id = ?",
       [claseId, req.user.id]
@@ -184,9 +170,8 @@ exports.getAlumnosDisponibles = async (req, res) => {
       return res.status(403).json({ error: "No tienes permiso" });
     }
 
-    // Obtener alumnos que no están en la clase
     const [alumnos] = await db.execute(
-      `SELECT u.id, u.firstname, u.lastname, u.email
+      `SELECT DISTINCT u.id, u.firstname, u.lastname, u.email
        FROM mdlwa_user u
        JOIN user_roles ur ON u.id = ur.user_id
        JOIN roles r ON ur.role_id = r.id

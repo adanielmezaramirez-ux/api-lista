@@ -1,14 +1,11 @@
-// src/controllers/adminController.js
 const db = require("../config/db");
-const bcrypt = require("bcrypt");
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 
-// Obtener todos los usuarios con sus roles
 exports.getAllUsers = async (req, res) => {
   try {
     const [users] = await db.execute(`
-      SELECT u.id, u.username, u.firstname, u.lastname, u.email,
+      SELECT DISTINCT u.id, u.username, u.firstname, u.lastname, u.email,
              u.suspended, u.deleted, u.confirmed,
              r.name as role_name
       FROM mdlwa_user u
@@ -17,14 +14,43 @@ exports.getAllUsers = async (req, res) => {
       ORDER BY u.id
     `);
     
-    res.json(users);
+    const usersWithRoles = [];
+    const userMap = new Map();
+
+    users.forEach(user => {
+      if (!userMap.has(user.id)) {
+        userMap.set(user.id, {
+          id: user.id,
+          username: user.username,
+          firstname: user.firstname,
+          lastname: user.lastname,
+          email: user.email,
+          suspended: user.suspended,
+          deleted: user.deleted,
+          confirmed: user.confirmed,
+          roles: []
+        });
+      }
+      
+      if (user.role_name) {
+        const currentUser = userMap.get(user.id);
+        if (!currentUser.roles.includes(user.role_name)) {
+          currentUser.roles.push(user.role_name);
+        }
+      }
+    });
+
+    userMap.forEach(user => {
+      usersWithRoles.push(user);
+    });
+
+    res.json(usersWithRoles);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Error en el servidor" });
   }
 };
 
-// Asignar rol a un usuario (solo admin)
 exports.assignRole = async (req, res) => {
   try {
     const { userId, roleName } = req.body;
@@ -41,7 +67,6 @@ exports.assignRole = async (req, res) => {
       });
     }
 
-    // Verificar que el usuario existe
     const [userExists] = await db.execute(
       "SELECT id FROM mdlwa_user WHERE id = ?",
       [userId]
@@ -51,7 +76,6 @@ exports.assignRole = async (req, res) => {
       return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
-    // Obtener el ID del rol
     const [role] = await db.execute(
       "SELECT id FROM roles WHERE name = ?",
       [roleName]
@@ -61,20 +85,12 @@ exports.assignRole = async (req, res) => {
       return res.status(404).json({ error: "Rol no encontrado" });
     }
 
-    // Verificar si ya tiene rol
     const [existingRole] = await db.execute(
-      "SELECT * FROM user_roles WHERE user_id = ?",
-      [userId]
+      "SELECT * FROM user_roles WHERE user_id = ? AND role_id = ?",
+      [userId, role[0].id]
     );
 
-    if (existingRole.length > 0) {
-      // Actualizar rol existente
-      await db.execute(
-        "UPDATE user_roles SET role_id = ? WHERE user_id = ?",
-        [role[0].id, userId]
-      );
-    } else {
-      // Insertar nuevo rol
+    if (existingRole.length === 0) {
       await db.execute(
         "INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)",
         [userId, role[0].id]
@@ -91,7 +107,171 @@ exports.assignRole = async (req, res) => {
   }
 };
 
-// Obtener todas las clases con sus horarios
+exports.assignMultipleRoles = async (req, res) => {
+  try {
+    const { userId, roleNames } = req.body;
+
+    if (!userId || !roleNames || !Array.isArray(roleNames) || roleNames.length === 0) {
+      return res.status(400).json({ 
+        error: "userId y roleNames (array) son requeridos" 
+      });
+    }
+
+    for (const roleName of roleNames) {
+      if (!['admin', 'maestro', 'alumno'].includes(roleName)) {
+        return res.status(400).json({ 
+          error: "Cada rol debe ser 'admin', 'maestro' o 'alumno'" 
+        });
+      }
+    }
+
+    const [userExists] = await db.execute(
+      "SELECT id FROM mdlwa_user WHERE id = ?",
+      [userId]
+    );
+
+    if (userExists.length === 0) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      const roleIds = [];
+      for (const roleName of roleNames) {
+        const [role] = await connection.execute(
+          "SELECT id FROM roles WHERE name = ?",
+          [roleName]
+        );
+
+        if (role.length === 0) {
+          await connection.rollback();
+          connection.release();
+          return res.status(404).json({ error: `Rol '${roleName}' no encontrado` });
+        }
+        roleIds.push(role[0].id);
+      }
+
+      for (const roleId of roleIds) {
+        await connection.execute(
+          "INSERT IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)",
+          [userId, roleId]
+        );
+      }
+
+      await connection.commit();
+      connection.release();
+
+      const [updatedRoles] = await db.execute(
+        `SELECT r.name as role_name
+         FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.id
+         WHERE ur.user_id = ?`,
+        [userId]
+      );
+
+      res.json({ 
+        message: `Roles [${roleNames.join(', ')}] asignados correctamente al usuario ${userId}`,
+        roles: updatedRoles.map(r => r.role_name)
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
+exports.removeRoles = async (req, res) => {
+  try {
+    const { userId, roleNames } = req.body;
+
+    if (!userId || !roleNames || !Array.isArray(roleNames) || roleNames.length === 0) {
+      return res.status(400).json({ 
+        error: "userId y roleNames (array) son requeridos" 
+      });
+    }
+
+    for (const roleName of roleNames) {
+      if (!['admin', 'maestro', 'alumno'].includes(roleName)) {
+        return res.status(400).json({ 
+          error: "Cada rol debe ser 'admin', 'maestro' o 'alumno'" 
+        });
+      }
+    }
+
+    const [userExists] = await db.execute(
+      "SELECT id FROM mdlwa_user WHERE id = ?",
+      [userId]
+    );
+
+    if (userExists.length === 0) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      const roleIds = [];
+      for (const roleName of roleNames) {
+        const [role] = await connection.execute(
+          "SELECT id FROM roles WHERE name = ?",
+          [roleName]
+        );
+
+        if (role.length > 0) {
+          roleIds.push(role[0].id);
+        }
+      }
+
+      if (roleIds.length === 0) {
+        await connection.rollback();
+        connection.release();
+        return res.status(404).json({ error: "No se encontraron roles válidos para eliminar" });
+      }
+
+      const placeholders = roleIds.map(() => '?').join(',');
+      const [result] = await connection.execute(
+        `DELETE FROM user_roles WHERE user_id = ? AND role_id IN (${placeholders})`,
+        [userId, ...roleIds]
+      );
+
+      await connection.commit();
+      connection.release();
+
+      const [updatedRoles] = await db.execute(
+        `SELECT r.name as role_name
+         FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.id
+         WHERE ur.user_id = ?`,
+        [userId]
+      );
+
+      res.json({ 
+        message: `Roles [${roleNames.join(', ')}] eliminados correctamente del usuario ${userId}`,
+        rolesEliminados: result.affectedRows,
+        rolesActuales: updatedRoles.map(r => r.role_name)
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
 exports.getAllClasses = async (req, res) => {
   try {
     const [clases] = await db.execute(`
@@ -153,7 +333,6 @@ exports.getAllClasses = async (req, res) => {
   }
 };
 
-// Crear una nueva clase con múltiples horarios
 exports.createClass = async (req, res) => {
   try {
     const { nombre, horarios, maestrosIds } = req.body;
@@ -166,7 +345,6 @@ exports.createClass = async (req, res) => {
       return res.status(400).json({ error: "Se requiere al menos un horario" });
     }
 
-    // Validar horarios
     for (const horario of horarios) {
       if (!horario.dia_semana || !horario.hora_inicio || !horario.hora_fin) {
         return res.status(400).json({ 
@@ -180,7 +358,6 @@ exports.createClass = async (req, res) => {
         });
       }
 
-      // Validar formato de hora (HH:MM:SS)
       const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/;
       if (!timeRegex.test(horario.hora_inicio) || !timeRegex.test(horario.hora_fin)) {
         return res.status(400).json({ 
@@ -193,7 +370,6 @@ exports.createClass = async (req, res) => {
     await connection.beginTransaction();
 
     try {
-      // Insertar clase
       const [result] = await connection.execute(
         `INSERT INTO clases (nombre, created_by) VALUES (?, ?)`,
         [nombre, req.user.id]
@@ -201,7 +377,6 @@ exports.createClass = async (req, res) => {
 
       const claseId = result.insertId;
 
-      // Insertar horarios
       for (const horario of horarios) {
         await connection.execute(
           `INSERT INTO horarios_clase (clase_id, dia_semana, hora_inicio, hora_fin) 
@@ -210,7 +385,6 @@ exports.createClass = async (req, res) => {
         );
       }
 
-      // Asignar maestros si se proporcionaron
       if (maestrosIds && Array.isArray(maestrosIds) && maestrosIds.length > 0) {
         for (const maestroId of maestrosIds) {
           await connection.execute(
@@ -222,7 +396,6 @@ exports.createClass = async (req, res) => {
 
       await connection.commit();
 
-      // Obtener la clase creada con sus horarios y maestros
       const [nuevaClase] = await db.execute(`
         SELECT 
           c.id, 
@@ -275,7 +448,6 @@ exports.createClass = async (req, res) => {
   }
 };
 
-// Actualizar horarios de una clase
 exports.updateHorarios = async (req, res) => {
   try {
     const { id } = req.params;
@@ -285,7 +457,6 @@ exports.updateHorarios = async (req, res) => {
       return res.status(400).json({ error: "Se requiere un array de horarios" });
     }
 
-    // Validar horarios
     for (const horario of horarios) {
       if (!horario.dia_semana || !horario.hora_inicio || !horario.hora_fin) {
         return res.status(400).json({ 
@@ -300,7 +471,6 @@ exports.updateHorarios = async (req, res) => {
       }
     }
 
-    // Verificar que la clase existe
     const [clase] = await db.execute(
       "SELECT id FROM clases WHERE id = ?",
       [id]
@@ -314,13 +484,11 @@ exports.updateHorarios = async (req, res) => {
     await connection.beginTransaction();
 
     try {
-      // Eliminar horarios existentes
       await connection.execute(
         "DELETE FROM horarios_clase WHERE clase_id = ?",
         [id]
       );
 
-      // Insertar nuevos horarios
       for (const horario of horarios) {
         await connection.execute(
           `INSERT INTO horarios_clase (clase_id, dia_semana, hora_inicio, hora_fin) 
@@ -349,7 +517,6 @@ exports.updateHorarios = async (req, res) => {
   }
 };
 
-// Asignar maestros a una clase
 exports.asignarMaestros = async (req, res) => {
   try {
     const { id } = req.params;
@@ -359,7 +526,6 @@ exports.asignarMaestros = async (req, res) => {
       return res.status(400).json({ error: "Se requiere un array de IDs de maestros" });
     }
 
-    // Verificar que la clase existe
     const [clase] = await db.execute(
       "SELECT id FROM clases WHERE id = ?",
       [id]
@@ -369,7 +535,6 @@ exports.asignarMaestros = async (req, res) => {
       return res.status(404).json({ error: "Clase no encontrada" });
     }
 
-    // Verificar que los maestros existen y tienen rol de maestro
     const placeholders = maestrosIds.map(() => '?').join(',');
     const [maestrosValidos] = await db.execute(
       `SELECT DISTINCT u.id 
@@ -386,7 +551,6 @@ exports.asignarMaestros = async (req, res) => {
       return res.status(400).json({ error: "No se encontraron maestros válidos" });
     }
 
-    // Insertar las asignaciones
     let asignados = 0;
     for (const maestroId of idsValidos) {
       const [result] = await db.execute(
@@ -408,7 +572,6 @@ exports.asignarMaestros = async (req, res) => {
   }
 };
 
-// Quitar maestro de una clase
 exports.removerMaestro = async (req, res) => {
   try {
     const { id, maestroId } = req.params;
@@ -430,7 +593,6 @@ exports.removerMaestro = async (req, res) => {
   }
 };
 
-// Asignar alumnos a una clase
 exports.asignarAlumnos = async (req, res) => {
   try {
     const { id } = req.params;
@@ -440,7 +602,6 @@ exports.asignarAlumnos = async (req, res) => {
       return res.status(400).json({ error: "Se requiere un array de IDs de alumnos" });
     }
 
-    // Verificar que la clase existe
     const [clase] = await db.execute(
       "SELECT id FROM clases WHERE id = ?",
       [id]
@@ -450,7 +611,6 @@ exports.asignarAlumnos = async (req, res) => {
       return res.status(404).json({ error: "Clase no encontrada" });
     }
 
-    // Verificar que los alumnos existen y tienen rol de alumno
     const placeholders = alumnosIds.map(() => '?').join(',');
     const [alumnosValidos] = await db.execute(
       `SELECT DISTINCT u.id 
@@ -467,7 +627,6 @@ exports.asignarAlumnos = async (req, res) => {
       return res.status(400).json({ error: "No se encontraron alumnos válidos" });
     }
 
-    // Insertar las asignaciones
     let asignados = 0;
     for (const alumnoId of idsValidos) {
       const [result] = await db.execute(
@@ -489,7 +648,6 @@ exports.asignarAlumnos = async (req, res) => {
   }
 };
 
-// Generar reporte de asistencia en Excel
 exports.descargarReporteExcel = async (req, res) => {
   try {
     const { claseId, fechaInicio, fechaFin } = req.query;
@@ -501,12 +659,17 @@ exports.descargarReporteExcel = async (req, res) => {
         u.lastname as alumno_apellido,
         a.fecha,
         a.presente,
+        a.registrado_por,
+        a.observacion,
+        rc.fecha_reprogramada,
+        rc.estado as estado_reprogramacion,
         CONCAT(m.firstname, ' ', m.lastname) as maestro_nombre
       FROM asistencia a
       JOIN clases c ON a.clase_id = c.id
       JOIN mdlwa_user u ON a.alumno_id = u.id
       JOIN clase_maestros cm ON c.id = cm.clase_id
       JOIN mdlwa_user m ON cm.maestro_id = m.id
+      LEFT JOIN reprogramaciones_clase rc ON a.reprogramacion_id = rc.id
       WHERE 1=1
     `;
     
@@ -531,20 +694,21 @@ exports.descargarReporteExcel = async (req, res) => {
 
     const [asistencias] = await db.execute(query, params);
 
-    // Crear libro de Excel
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Asistencias');
 
-    // Definir columnas
     worksheet.columns = [
       { header: 'Clase', key: 'clase', width: 30 },
       { header: 'Alumno', key: 'alumno', width: 30 },
       { header: 'Fecha', key: 'fecha', width: 15 },
       { header: 'Asistió', key: 'presente', width: 10 },
+      { header: 'Registrado Por', key: 'registrado_por', width: 15 },
+      { header: 'Observación', key: 'observacion', width: 30 },
+      { header: 'Fecha Reprogramada', key: 'fecha_reprogramada', width: 15 },
+      { header: 'Estado Reprogramación', key: 'estado_reprogramacion', width: 20 },
       { header: 'Maestro', key: 'maestro', width: 30 }
     ];
 
-    // Estilo para encabezados
     worksheet.getRow(1).font = { bold: true };
     worksheet.getRow(1).fill = {
       type: 'pattern',
@@ -553,29 +717,35 @@ exports.descargarReporteExcel = async (req, res) => {
     };
     worksheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
 
-    // Agregar datos
     asistencias.forEach(a => {
       worksheet.addRow({
         clase: a.clase_nombre,
         alumno: `${a.alumno_nombre} ${a.alumno_apellido}`,
         fecha: a.fecha,
         presente: a.presente ? 'Sí' : 'No',
+        registrado_por: a.registrado_por,
+        observacion: a.observacion || '',
+        fecha_reprogramada: a.fecha_reprogramada || '',
+        estado_reprogramacion: a.estado_reprogramacion || '',
         maestro: a.maestro_nombre
       });
     });
 
-    // Agregar resumen
     worksheet.addRow([]);
-    worksheet.addRow(['Resumen', '', '', '', '']);
-    worksheet.addRow(['Total registros:', asistencias.length, '', '', '']);
+    worksheet.addRow(['Resumen', '', '', '', '', '', '', '', '']);
+    worksheet.addRow(['Total registros:', asistencias.length, '', '', '', '', '', '', '']);
     
     const presentes = asistencias.filter(a => a.presente).length;
-    worksheet.addRow(['Total asistencias:', presentes, '', '', '']);
+    worksheet.addRow(['Total asistencias:', presentes, '', '', '', '', '', '', '']);
+    const sistema = asistencias.filter(a => a.registrado_por === 'sistema').length;
+    worksheet.addRow(['Registradas por sistema:', sistema, '', '', '', '', '', '', '']);
+    const maestro = asistencias.filter(a => a.registrado_por === 'maestro').length;
+    worksheet.addRow(['Registradas por maestro:', maestro, '', '', '', '', '', '', '']);
+    
     if (asistencias.length > 0) {
-      worksheet.addRow(['Porcentaje asistencia:', `${((presentes / asistencias.length) * 100).toFixed(2)}%`, '', '', '']);
+      worksheet.addRow(['Porcentaje asistencia:', `${((presentes / asistencias.length) * 100).toFixed(2)}%`, '', '', '', '', '', '', '']);
     }
 
-    // Configurar respuesta
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=reporte_asistencias_${new Date().toISOString().split('T')[0]}.xlsx`);
 
@@ -588,7 +758,6 @@ exports.descargarReporteExcel = async (req, res) => {
   }
 };
 
-// Generar reporte de asistencia en PDF
 exports.descargarReportePDF = async (req, res) => {
   try {
     const { claseId, fechaInicio, fechaFin } = req.query;
@@ -600,12 +769,17 @@ exports.descargarReportePDF = async (req, res) => {
         u.lastname as alumno_apellido,
         a.fecha,
         a.presente,
+        a.registrado_por,
+        a.observacion,
+        rc.fecha_reprogramada,
+        rc.estado as estado_reprogramacion,
         CONCAT(m.firstname, ' ', m.lastname) as maestro_nombre
       FROM asistencia a
       JOIN clases c ON a.clase_id = c.id
       JOIN mdlwa_user u ON a.alumno_id = u.id
       JOIN clase_maestros cm ON c.id = cm.clase_id
       JOIN mdlwa_user m ON cm.maestro_id = m.id
+      LEFT JOIN reprogramaciones_clase rc ON a.reprogramacion_id = rc.id
       WHERE 1=1
     `;
     
@@ -630,7 +804,6 @@ exports.descargarReportePDF = async (req, res) => {
 
     const [asistencias] = await db.execute(query, params);
 
-    // Crear PDF
     const doc = new PDFDocument({ margin: 50, size: 'A4', layout: 'landscape' });
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -638,11 +811,9 @@ exports.descargarReportePDF = async (req, res) => {
 
     doc.pipe(res);
 
-    // Título
     doc.fontSize(18).text('Reporte de Asistencias', { align: 'center' });
     doc.moveDown();
 
-    // Filtros aplicados
     doc.fontSize(10).text(`Fecha de generación: ${new Date().toLocaleDateString()}`, { align: 'right' });
     if (claseId) {
       const [clase] = await db.execute("SELECT nombre FROM clases WHERE id = ?", [claseId]);
@@ -654,26 +825,26 @@ exports.descargarReportePDF = async (req, res) => {
     if (fechaFin) doc.text(`Hasta: ${fechaFin}`);
     doc.moveDown();
 
-    // Crear tabla
     const tableTop = 150;
     const itemSpacing = 20;
     
-    // Encabezados
-    doc.fontSize(10).font('Helvetica-Bold');
+    doc.fontSize(8).font('Helvetica-Bold');
     doc.text('Clase', 50, tableTop);
-    doc.text('Alumno', 200, tableTop);
-    doc.text('Fecha', 350, tableTop);
-    doc.text('Asistió', 420, tableTop);
-    doc.text('Maestro', 480, tableTop);
+    doc.text('Alumno', 150, tableTop);
+    doc.text('Fecha', 250, tableTop);
+    doc.text('Asistió', 300, tableTop);
+    doc.text('Registró', 330, tableTop);
+    doc.text('Observación', 380, tableTop);
+    doc.text('Maestro', 500, tableTop);
 
-    // Línea separadora
     doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
 
-    // Datos
     let yPosition = tableTop + 25;
     doc.font('Helvetica');
 
     let totalPresentes = 0;
+    let totalSistema = 0;
+    let totalMaestro = 0;
 
     asistencias.forEach((a, i) => {
       if (yPosition > 550) {
@@ -681,26 +852,31 @@ exports.descargarReportePDF = async (req, res) => {
         yPosition = 50;
       }
 
-      doc.text(a.clase_nombre.substring(0, 20), 50, yPosition);
-      doc.text(`${a.alumno_nombre} ${a.alumno_apellido}`.substring(0, 20), 200, yPosition);
-      doc.text(new Date(a.fecha).toLocaleDateString(), 350, yPosition);
-      doc.text(a.presente ? 'Sí' : 'No', 420, yPosition);
-      doc.text(a.maestro_nombre.substring(0, 20), 480, yPosition);
+      doc.fontSize(7).text(a.clase_nombre.substring(0, 15), 50, yPosition);
+      doc.text(`${a.alumno_nombre} ${a.alumno_apellido}`.substring(0, 15), 150, yPosition);
+      doc.text(new Date(a.fecha).toLocaleDateString(), 250, yPosition);
+      doc.text(a.presente ? 'Sí' : 'No', 300, yPosition);
+      doc.text(a.registrado_por, 330, yPosition);
+      doc.text((a.observacion || '').substring(0, 20), 380, yPosition);
+      doc.text(a.maestro_nombre.substring(0, 15), 500, yPosition);
 
       if (a.presente) totalPresentes++;
+      if (a.registrado_por === 'sistema') totalSistema++;
+      if (a.registrado_por === 'maestro') totalMaestro++;
       
       yPosition += itemSpacing;
     });
 
-    // Resumen
     doc.moveDown(2);
-    doc.font('Helvetica-Bold');
+    doc.font('Helvetica-Bold').fontSize(10);
     doc.text('RESUMEN:', 50, yPosition + 20);
-    doc.font('Helvetica');
+    doc.font('Helvetica').fontSize(9);
     doc.text(`Total registros: ${asistencias.length}`, 50, yPosition + 40);
     doc.text(`Total asistencias: ${totalPresentes}`, 50, yPosition + 55);
+    doc.text(`Registradas por sistema: ${totalSistema}`, 50, yPosition + 70);
+    doc.text(`Registradas por maestro: ${totalMaestro}`, 50, yPosition + 85);
     if (asistencias.length > 0) {
-      doc.text(`Porcentaje asistencia: ${((totalPresentes / asistencias.length) * 100).toFixed(2)}%`, 50, yPosition + 70);
+      doc.text(`Porcentaje asistencia: ${((totalPresentes / asistencias.length) * 100).toFixed(2)}%`, 50, yPosition + 100);
     }
 
     doc.end();

@@ -1,4 +1,3 @@
-// src/middleware/authMiddleware.js
 const jwt = require("jsonwebtoken");
 const db = require("../config/db");
 
@@ -12,15 +11,11 @@ exports.protect = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Obtener información actualizada del usuario incluyendo rol
+
     const [users] = await db.execute(
-      `SELECT u.id, u.username, u.firstname, u.lastname, u.email,
-              r.name as role_name
-       FROM mdlwa_user u
-       LEFT JOIN user_roles ur ON u.id = ur.user_id
-       LEFT JOIN roles r ON ur.role_id = r.id
-       WHERE u.id = ?`,
+      `SELECT id, username, firstname, lastname, email
+       FROM mdlwa_user
+       WHERE id = ?`,
       [decoded.id]
     );
 
@@ -28,7 +23,19 @@ exports.protect = async (req, res, next) => {
       return res.status(401).json({ error: "Usuario no encontrado" });
     }
 
-    req.user = users[0];
+    const user = users[0];
+
+    const [roles] = await db.execute(
+      `SELECT DISTINCT r.name as role_name
+       FROM user_roles ur
+       JOIN roles r ON ur.role_id = r.id
+       WHERE ur.user_id = ?`,
+      [user.id]
+    );
+
+    req.user = user;
+    req.user.roles = roles.map(r => r.role_name);
+
     next();
   } catch (error) {
     console.error(error);
@@ -36,41 +43,23 @@ exports.protect = async (req, res, next) => {
   }
 };
 
-// Middleware para validar rol admin
-exports.isAdmin = async (req, res, next) => {
-  try {
-    if (req.user.role_name !== 'admin') {
-      return res.status(403).json({ error: "Se requieren permisos de administrador" });
-    }
-    next();
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Error en el servidor" });
+exports.isAdmin = (req, res, next) => {
+  if (!req.user.roles.includes('admin')) {
+    return res.status(403).json({ error: "Se requieren permisos de administrador" });
   }
+  next();
 };
 
-// Middleware para validar rol maestro
-exports.isMaestro = async (req, res, next) => {
-  try {
-    if (req.user.role_name !== 'maestro') {
-      return res.status(403).json({ error: "Se requieren permisos de maestro" });
-    }
-    next();
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Error en el servidor" });
+exports.isMaestro = (req, res, next) => {
+  if (!req.user.roles.includes('maestro')) {
+    return res.status(403).json({ error: "Se requieren permisos de maestro" });
   }
+  next();
 };
 
-// Middleware para validar que sea admin o maestro
-exports.isAdminOrMaestro = async (req, res, next) => {
-  try {
-    if (req.user.role_name !== 'admin' && req.user.role_name !== 'maestro') {
-      return res.status(403).json({ error: "No tienes permisos para esta acción" });
-    }
-    next();
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Error en el servidor" });
+exports.isAdminOrMaestro = (req, res, next) => {
+  if (!req.user.roles.includes('admin') && !req.user.roles.includes('maestro')) {
+    return res.status(403).json({ error: "No tienes permisos para esta acción" });
   }
+  next();
 };

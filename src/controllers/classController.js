@@ -1,7 +1,5 @@
-// src/controllers/classController.js
 const db = require("../config/db");
 
-// Obtener clases del maestro con horarios múltiples
 exports.getMisClases = async (req, res) => {
   try {
     const [clases] = await db.execute(`
@@ -41,7 +39,6 @@ exports.getMisClases = async (req, res) => {
       ORDER BY c.nombre
     `, [req.user.id]);
 
-    // Procesar los resultados para asegurar que horarios y alumnos sean arrays
     const clasesProcesadas = clases.map(clase => ({
       ...clase,
       horarios: clase.horarios || [],
@@ -56,12 +53,10 @@ exports.getMisClases = async (req, res) => {
   }
 };
 
-// Obtener detalle de una clase específica con horarios
 exports.getClassById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Verificar que el maestro tiene acceso a esta clase
     const [acceso] = await db.execute(
       "SELECT * FROM clase_maestros WHERE clase_id = ? AND maestro_id = ?",
       [id, req.user.id]
@@ -71,7 +66,6 @@ exports.getClassById = async (req, res) => {
       return res.status(403).json({ error: "No tienes acceso a esta clase" });
     }
 
-    // Obtener información de la clase con horarios
     const [clases] = await db.execute(`
       SELECT 
         c.id, 
@@ -103,7 +97,6 @@ exports.getClassById = async (req, res) => {
       horarios: clases[0].horarios || []
     };
 
-    // Obtener alumnos inscritos en la clase
     const [alumnos] = await db.execute(
       `SELECT 
         u.id, 
@@ -120,6 +113,15 @@ exports.getClassById = async (req, res) => {
 
     clase.alumnos = alumnos;
 
+    const [reprogramaciones] = await db.execute(
+      `SELECT id, fecha_original, fecha_reprogramada, estado
+       FROM reprogramaciones_clase
+       WHERE clase_id = ? AND estado IN ('pendiente', 'aprobada')`,
+      [id]
+    );
+
+    clase.reprogramaciones = reprogramaciones;
+
     res.json(clase);
 
   } catch (error) {
@@ -128,14 +130,12 @@ exports.getClassById = async (req, res) => {
   }
 };
 
-// Marcar asistencia (solo maestro) - VERSIÓN ACTUALIZADA CON HORARIO_ID
 exports.marcarAsistencia = async (req, res) => {
   try {
-    const { claseId, alumnoId, fecha, presente, horarioId } = req.body;
+    const { claseId, alumnoId, fecha, presente, horarioId, observacion } = req.body;
 
-    console.log('📝 Recibida solicitud de asistencia:', { claseId, alumnoId, fecha, presente, horarioId });
+    console.log('Recibida solicitud de asistencia:', { claseId, alumnoId, fecha, presente, horarioId, observacion });
 
-    // Verificar que el maestro tiene acceso a esta clase
     const [acceso] = await db.execute(
       "SELECT * FROM clase_maestros WHERE clase_id = ? AND maestro_id = ?",
       [claseId, req.user.id]
@@ -145,7 +145,19 @@ exports.marcarAsistencia = async (req, res) => {
       return res.status(403).json({ error: "No tienes permiso para esta clase" });
     }
 
-    // Verificar que el alumno está inscrito en la clase
+    const [reprogramaciones] = await db.execute(
+      `SELECT id FROM reprogramaciones_clase 
+       WHERE clase_id = ? AND fecha_original = ? 
+       AND estado IN ('pendiente', 'aprobada')`,
+      [claseId, fecha]
+    );
+
+    if (reprogramaciones.length > 0) {
+      return res.status(403).json({ 
+        error: "No se puede marcar asistencia. Esta clase fue reprogramada para esta fecha." 
+      });
+    }
+
     const [inscripcion] = await db.execute(
       "SELECT * FROM clase_alumnos WHERE clase_id = ? AND alumno_id = ?",
       [claseId, alumnoId]
@@ -155,7 +167,6 @@ exports.marcarAsistencia = async (req, res) => {
       return res.status(400).json({ error: "El alumno no está inscrito en esta clase" });
     }
 
-    // Si se proporciona horarioId, verificar que pertenece a la clase
     if (horarioId) {
       const [horario] = await db.execute(
         "SELECT * FROM horarios_clase WHERE id = ? AND clase_id = ?",
@@ -163,36 +174,31 @@ exports.marcarAsistencia = async (req, res) => {
       );
       
       if (horario.length === 0) {
-        console.warn('⚠️ Horario no válido para esta clase:', horarioId);
-        // No bloqueamos la operación, solo advertimos
+        console.warn('Horario no válido para esta clase:', horarioId);
       }
     }
 
-    // Verificar si ya existe un registro para este alumno en esta fecha
     const [existente] = await db.execute(
-      "SELECT id, horario_id FROM asistencia WHERE clase_id = ? AND alumno_id = ? AND fecha = ?",
+      "SELECT id FROM asistencia WHERE clase_id = ? AND alumno_id = ? AND fecha = ?",
       [claseId, alumnoId, fecha]
     );
 
-    let result;
-    
     if (existente.length > 0) {
-      // Actualizar registro existente, incluyendo horario_id
-      result = await db.execute(
+      await db.execute(
         `UPDATE asistencia 
-         SET presente = ?, horario_id = ? 
+         SET presente = ?, horario_id = ?, registrado_por = 'maestro', observacion = ?
          WHERE clase_id = ? AND alumno_id = ? AND fecha = ?`,
-        [presente, horarioId || null, claseId, alumnoId, fecha]
+        [presente, horarioId || null, observacion || null, claseId, alumnoId, fecha]
       );
-      console.log('✅ Asistencia actualizada para alumno:', alumnoId, 'horario_id:', horarioId || null);
+      console.log('Asistencia actualizada para alumno:', alumnoId, 'horario_id:', horarioId || null);
     } else {
-      // Insertar nuevo registro con horario_id
-      result = await db.execute(
-        `INSERT INTO asistencia (clase_id, alumno_id, fecha, presente, horario_id)
-         VALUES (?, ?, ?, ?, ?)`,
-        [claseId, alumnoId, fecha, presente, horarioId || null]
+      await db.execute(
+        `INSERT INTO asistencia 
+         (clase_id, horario_id, alumno_id, fecha, presente, registrado_por, observacion)
+         VALUES (?, ?, ?, ?, ?, 'maestro', ?)`,
+        [claseId, horarioId || null, alumnoId, fecha, presente, observacion || null]
       );
-      console.log('✅ Asistencia insertada para alumno:', alumnoId, 'horario_id:', horarioId || null);
+      console.log('Asistencia insertada para alumno:', alumnoId, 'horario_id:', horarioId || null);
     }
 
     res.json({ 
@@ -201,18 +207,16 @@ exports.marcarAsistencia = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error al marcar asistencia:', error);
+    console.error('Error al marcar asistencia:', error);
     res.status(500).json({ error: "Error en el servidor" });
   }
 };
 
-// Obtener asistencias de una clase
 exports.getAsistencias = async (req, res) => {
   try {
     const { claseId } = req.params;
     const { fecha } = req.query;
 
-    // Verificar que el maestro tiene acceso a esta clase
     const [acceso] = await db.execute(
       "SELECT * FROM clase_maestros WHERE clase_id = ? AND maestro_id = ?",
       [claseId, req.user.id]
@@ -234,7 +238,10 @@ exports.getAsistencias = async (req, res) => {
         a.horario_id,
         h.dia_semana,
         h.hora_inicio,
-        h.hora_fin
+        h.hora_fin,
+        a.registrado_por,
+        a.observacion,
+        a.reprogramacion_id
       FROM asistencia a
       JOIN mdlwa_user u ON a.alumno_id = u.id
       LEFT JOIN horarios_clase h ON a.horario_id = h.id

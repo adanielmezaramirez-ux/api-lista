@@ -1,4 +1,3 @@
-// src/controllers/authController.js
 const db = require("../config/db");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
@@ -13,15 +12,11 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Obtener usuario y su rol
     const [users] = await db.execute(
-      `SELECT u.id, u.username, u.password, u.firstname, u.lastname, u.email, 
-              u.suspended, u.deleted, u.confirmed,
-              r.name as role_name
-       FROM mdlwa_user u
-       LEFT JOIN user_roles ur ON u.id = ur.user_id
-       LEFT JOIN roles r ON ur.role_id = r.id
-       WHERE u.username = ?`,
+      `SELECT id, username, password, firstname, lastname, email,
+              suspended, deleted, confirmed
+       FROM mdlwa_user
+       WHERE username = ?`,
       [username]
     );
 
@@ -33,7 +28,6 @@ exports.login = async (req, res) => {
 
     const user = users[0];
 
-    // Validaciones de estado
     if (user.deleted === 1) {
       return res.status(403).json({ error: "Usuario eliminado" });
     }
@@ -46,14 +40,22 @@ exports.login = async (req, res) => {
       return res.status(403).json({ error: "Usuario no confirmado" });
     }
 
-    // Verificar que tenga un rol válido (admin o maestro)
-    if (user.role_name !== 'admin' && user.role_name !== 'maestro') {
+    const [userRoles] = await db.execute(
+      `SELECT DISTINCT r.name as role_name
+       FROM user_roles ur
+       JOIN roles r ON ur.role_id = r.id
+       WHERE ur.user_id = ?`,
+      [user.id]
+    );
+    
+    const roles = userRoles.map(r => r.role_name);
+
+    if (!roles.includes('admin') && !roles.includes('maestro')) {
       return res.status(403).json({ 
         error: "Acceso denegado. No tienes permisos para acceder al sistema." 
       });
     }
 
-    // Ajuste especial para Moodle: reemplaza $2y$ por $2a$ para bcrypt en Node
     const hashMoodle = user.password.replace(/^\$2y/, "$2a");
     const match = await bcrypt.compare(password, hashMoodle);
 
@@ -63,12 +65,13 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Generar token JWT
+    const primaryRole = roles.includes('admin') ? 'admin' : 'maestro';
+
     const token = jwt.sign(
       { 
         id: user.id, 
         username: user.username,
-        role: user.role_name
+        role: primaryRole
       },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
@@ -83,12 +86,11 @@ exports.login = async (req, res) => {
         firstname: user.firstname,
         lastname: user.lastname,
         email: user.email,
-        role: user.role_name
+        roles: roles
       }
     };
 
-    // Si es admin, obtener todas las clases con maestros y alumnos
-    if (user.role_name === 'admin') {
+    if (roles.includes('admin')) {
       const [clases] = await db.execute(`
         SELECT 
           c.id,
@@ -141,8 +143,7 @@ exports.login = async (req, res) => {
         maestros: clase.maestros || [],
         alumnos: clase.alumnos || []
       }));
-    } else {
-      // Si es maestro, obtener solo sus clases
+    } else if (roles.includes('maestro')) {
       const [clases] = await db.execute(`
         SELECT 
           c.id,
