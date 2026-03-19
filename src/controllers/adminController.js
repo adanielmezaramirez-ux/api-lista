@@ -448,6 +448,43 @@ exports.createClass = async (req, res) => {
   }
 };
 
+exports.updateClassName = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre } = req.body;
+
+    if (!nombre) {
+      return res.status(400).json({ error: "El nombre de la clase es requerido" });
+    }
+
+    const [clase] = await db.execute(
+      "SELECT id FROM clases WHERE id = ?",
+      [id]
+    );
+
+    if (clase.length === 0) {
+      return res.status(404).json({ error: "Clase no encontrada" });
+    }
+
+    await db.execute(
+      "UPDATE clases SET nombre = ? WHERE id = ?",
+      [nombre, id]
+    );
+
+    res.json({ 
+      message: "Nombre de la clase actualizado correctamente",
+      clase: {
+        id: parseInt(id),
+        nombre
+      }
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
 exports.updateHorarios = async (req, res) => {
   try {
     const { id } = req.params;
@@ -586,6 +623,27 @@ exports.removerMaestro = async (req, res) => {
     }
 
     res.json({ message: "Maestro removido de la clase correctamente" });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
+exports.removerAlumno = async (req, res) => {
+  try {
+    const { id, alumnoId } = req.params;
+
+    const [result] = await db.execute(
+      "DELETE FROM clase_alumnos WHERE clase_id = ? AND alumno_id = ?",
+      [id, alumnoId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "El alumno no está asignado a esta clase" });
+    }
+
+    res.json({ message: "Alumno removido de la clase correctamente" });
 
   } catch (error) {
     console.error(error);

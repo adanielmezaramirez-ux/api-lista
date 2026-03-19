@@ -9,7 +9,6 @@ const reprogramacionRoutes = require("./routes/reprogramacionRoutes");
 const app = express();
 
 app.use(cors({
-  //origin: 'http://localhost:3001',
   origin: 'https://front-lista.vercel.app',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -47,10 +46,12 @@ app.get("/", (req, res) => {
         removerRoles: "POST /admin/remove-roles",
         clases: "GET /admin/classes",
         crearClase: "POST /admin/classes",
+        editarNombreClase: "PUT /admin/classes/:id/nombre",
         actualizarHorarios: "PUT /admin/classes/:id/horarios",
         asignarMaestros: "POST /admin/classes/:id/maestros",
         quitarMaestro: "DELETE /admin/classes/:id/maestros/:maestroId",
         asignarAlumnos: "POST /admin/classes/:id/alumnos",
+        quitarAlumno: "DELETE /admin/classes/:id/alumnos/:alumnoId",
         reporteExcel: "GET /admin/reportes/excel",
         reportePDF: "GET /admin/reportes/pdf",
         reprogramaciones: "GET /reprogramaciones",
