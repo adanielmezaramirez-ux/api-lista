@@ -2,7 +2,23 @@ const db = require("../config/db");
 
 exports.solicitarReprogramacion = async (req, res) => {
   try {
-    const { claseId, horarioOriginalId, fechaOriginal, fechaReprogramada, motivo } = req.body;
+    const { 
+      claseId, 
+      horarioOriginalId, 
+      fechaOriginal, 
+      fechaReprogramada,
+      horaInicio,
+      horaFin,
+      diaSemana,
+      motivo 
+    } = req.body;
+
+    if (!claseId || !horarioOriginalId || !fechaOriginal || !fechaReprogramada || 
+        !horaInicio || !horaFin || !diaSemana) {
+      return res.status(400).json({ 
+        error: "Todos los campos son requeridos: claseId, horarioOriginalId, fechaOriginal, fechaReprogramada, horaInicio, horaFin, diaSemana" 
+      });
+    }
 
     const [acceso] = await db.execute(
       "SELECT * FROM clase_maestros WHERE clase_id = ? AND maestro_id = ?",
@@ -22,6 +38,17 @@ exports.solicitarReprogramacion = async (req, res) => {
       return res.status(400).json({ error: "Horario no válido para esta clase" });
     }
 
+    if (diaSemana < 1 || diaSemana > 7) {
+      return res.status(400).json({ error: "dia_semana debe ser entre 1 (Lunes) y 7 (Domingo)" });
+    }
+
+    const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/;
+    if (!timeRegex.test(horaInicio) || !timeRegex.test(horaFin)) {
+      return res.status(400).json({ 
+        error: "Formato de hora inválido. Use HH:MM:SS" 
+      });
+    }
+
     const [existente] = await db.execute(
       `SELECT id FROM reprogramaciones_clase 
        WHERE clase_id = ? AND fecha_original = ? AND horario_original_id = ? 
@@ -30,19 +57,33 @@ exports.solicitarReprogramacion = async (req, res) => {
     );
 
     if (existente.length > 0) {
-      return res.status(400).json({ error: "Ya existe una solicitud pendiente o aprobada para esta clase y fecha" });
+      return res.status(400).json({ error: "Ya existe una solicitud pendiente o aprobada para esta clase y fecha original" });
     }
 
     const [result] = await db.execute(
       `INSERT INTO reprogramaciones_clase 
-       (clase_id, horario_original_id, fecha_original, fecha_reprogramada, motivo, solicitado_por, estado)
-       VALUES (?, ?, ?, ?, ?, ?, 'pendiente')`,
-      [claseId, horarioOriginalId, fechaOriginal, fechaReprogramada, motivo, req.user.id]
+       (clase_id, horario_original_id, fecha_original, fecha_reprogramada, 
+        hora_inicio, hora_fin, dia_semana, motivo, solicitado_por, estado)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')`,
+      [claseId, horarioOriginalId, fechaOriginal, fechaReprogramada, 
+       horaInicio, horaFin, diaSemana, motivo || null, req.user.id]
     );
 
     res.status(201).json({
       message: "Solicitud de reprogramación creada exitosamente",
-      reprogramacionId: result.insertId
+      reprogramacionId: result.insertId,
+      reprogramacion: {
+        id: result.insertId,
+        claseId,
+        horarioOriginalId,
+        fechaOriginal,
+        fechaReprogramada,
+        horaInicio,
+        horaFin,
+        diaSemana,
+        motivo: motivo || null,
+        estado: 'pendiente'
+      }
     });
 
   } catch (error) {
@@ -54,16 +95,20 @@ exports.solicitarReprogramacion = async (req, res) => {
 exports.procesarReprogramacion = async (req, res) => {
   try {
     const { id } = req.params;
-    const { estado, horarioReprogramadoId } = req.body;
+    const { estado } = req.body;
 
     if (!['aprobada', 'rechazada'].includes(estado)) {
       return res.status(400).json({ error: "Estado debe ser 'aprobada' o 'rechazada'" });
     }
 
     const [solicitud] = await db.execute(
-      `SELECT rc.*, c.nombre as clase_nombre 
+      `SELECT rc.*, c.nombre as clase_nombre,
+              h.dia_semana as dia_original,
+              h.hora_inicio as hora_inicio_original,
+              h.hora_fin as hora_fin_original
        FROM reprogramaciones_clase rc
        JOIN clases c ON rc.clase_id = c.id
+       JOIN horarios_clase h ON rc.horario_original_id = h.id
        WHERE rc.id = ?`,
       [id]
     );
@@ -82,9 +127,9 @@ exports.procesarReprogramacion = async (req, res) => {
     try {
       await connection.execute(
         `UPDATE reprogramaciones_clase 
-         SET estado = ?, aprobado_por = ?, horario_reprogramado_id = ?
+         SET estado = ?, aprobado_por = ?
          WHERE id = ?`,
-        [estado, req.user.id, horarioReprogramadoId || null, id]
+        [estado, req.user.id, id]
       );
 
       if (estado === 'aprobada') {
@@ -109,7 +154,7 @@ exports.procesarReprogramacion = async (req, res) => {
               alumno.alumno_id,
               solicitud[0].fecha_original,
               0,
-              `Clase reprogramada para el ${solicitud[0].fecha_reprogramada}`,
+              `Clase reprogramada para el ${solicitud[0].fecha_reprogramada} a las ${solicitud[0].hora_inicio.substring(0,5)}`,
               id
             ]
           );
@@ -117,6 +162,7 @@ exports.procesarReprogramacion = async (req, res) => {
       }
 
       await connection.commit();
+      
       res.json({ 
         message: `Solicitud ${estado} correctamente`,
         solicitud: solicitud[0]
@@ -138,6 +184,7 @@ exports.procesarReprogramacion = async (req, res) => {
 exports.getReprogramaciones = async (req, res) => {
   try {
     const { estado, claseId } = req.query;
+    
     let query = `
       SELECT 
         rc.*,
@@ -146,16 +193,12 @@ exports.getReprogramaciones = async (req, res) => {
         CONCAT(aprobador.firstname, ' ', aprobador.lastname) as aprobado_por_nombre,
         ho.dia_semana as dia_original,
         ho.hora_inicio as hora_inicio_original,
-        ho.hora_fin as hora_fin_original,
-        hr.dia_semana as dia_reprogramado,
-        hr.hora_inicio as hora_inicio_reprogramado,
-        hr.hora_fin as hora_fin_reprogramado
+        ho.hora_fin as hora_fin_original
       FROM reprogramaciones_clase rc
       JOIN clases c ON rc.clase_id = c.id
       JOIN mdlwa_user solicitante ON rc.solicitado_por = solicitante.id
       LEFT JOIN mdlwa_user aprobador ON rc.aprobado_por = aprobador.id
       JOIN horarios_clase ho ON rc.horario_original_id = ho.id
-      LEFT JOIN horarios_clase hr ON rc.horario_reprogramado_id = hr.id
       WHERE 1=1
     `;
 
@@ -179,6 +222,7 @@ exports.getReprogramaciones = async (req, res) => {
     query += ` ORDER BY rc.created_at DESC`;
 
     const [reprogramaciones] = await db.execute(query, params);
+    
     res.json(reprogramaciones);
 
   } catch (error) {
@@ -190,6 +234,12 @@ exports.getReprogramaciones = async (req, res) => {
 exports.marcarAsistenciaReprogramada = async (req, res) => {
   try {
     const { reprogramacionId, alumnoId, presente } = req.body;
+
+    if (!reprogramacionId || !alumnoId) {
+      return res.status(400).json({ 
+        error: "reprogramacionId y alumnoId son requeridos" 
+      });
+    }
 
     const [reprogramacion] = await db.execute(
       `SELECT rc.*, cm.maestro_id 
@@ -208,26 +258,53 @@ exports.marcarAsistenciaReprogramada = async (req, res) => {
       return res.status(403).json({ error: "No tienes permiso para esta clase" });
     }
 
-    await db.execute(
-      `INSERT INTO asistencia 
-       (clase_id, horario_id, alumno_id, fecha, presente, registrado_por, reprogramacion_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-       presente = VALUES(presente),
-       registrado_por = VALUES(registrado_por),
-       reprogramacion_id = VALUES(reprogramacion_id)`,
-      [
-        reprogramacion[0].clase_id,
-        reprogramacion[0].horario_reprogramado_id || reprogramacion[0].horario_original_id,
-        alumnoId,
-        reprogramacion[0].fecha_reprogramada,
-        presente,
-        'maestro',
-        reprogramacionId
-      ]
-    );
+    if (reprogramacion[0].ya_tomada) {
+      return res.status(400).json({ error: "Esta clase reprogramada ya ha sido tomada" });
+    }
 
-    res.json({ message: "Asistencia en clase reprogramada registrada correctamente" });
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      await connection.execute(
+        `INSERT INTO asistencia 
+         (clase_id, horario_id, alumno_id, fecha, presente, registrado_por, reprogramacion_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+         presente = VALUES(presente),
+         registrado_por = VALUES(registrado_por),
+         reprogramacion_id = VALUES(reprogramacion_id)`,
+        [
+          reprogramacion[0].clase_id,
+          reprogramacion[0].horario_original_id,
+          alumnoId,
+          reprogramacion[0].fecha_reprogramada,
+          presente ? 1 : 0,
+          'maestro',
+          reprogramacionId
+        ]
+      );
+
+      await connection.execute(
+        `UPDATE reprogramaciones_clase 
+         SET ya_tomada = TRUE 
+         WHERE id = ?`,
+        [reprogramacionId]
+      );
+
+      await connection.commit();
+      
+      res.json({ 
+        message: "Asistencia en clase reprogramada registrada correctamente",
+        reprogramacionId
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
 
   } catch (error) {
     console.error(error);
@@ -243,36 +320,106 @@ exports.verificarClaseReprogramada = async (req, res) => {
       return res.status(400).json({ error: "claseId y fecha son requeridos" });
     }
 
-    const [reprogramaciones] = await db.execute(
-      `SELECT id, fecha_original, fecha_reprogramada, estado
+    // Verificar si hay una reprogramación aprobada para esta fecha (como fecha original)
+    const [reprogramacionesOriginal] = await db.execute(
+      `SELECT id, fecha_original, fecha_reprogramada, estado, ya_tomada,
+              hora_inicio, hora_fin, dia_semana
        FROM reprogramaciones_clase
-       WHERE clase_id = ? 
-       AND (fecha_original = ? OR fecha_reprogramada = ?)
-       AND estado IN ('pendiente', 'aprobada')`,
-      [claseId, fecha, fecha]
+       WHERE clase_id = ? AND fecha_original = ? 
+       AND estado = 'aprobada'`,
+      [claseId, fecha]
     );
 
-    const estaBloqueada = reprogramaciones.some(r => 
-      r.fecha_original === fecha && (r.estado === 'pendiente' || r.estado === 'aprobada')
+    // Verificar si hay una reprogramación aprobada para esta fecha (como fecha reprogramada)
+    const [reprogramacionesReprogramada] = await db.execute(
+      `SELECT id, fecha_original, fecha_reprogramada, estado, ya_tomada,
+              hora_inicio, hora_fin, dia_semana
+       FROM reprogramaciones_clase
+       WHERE clase_id = ? AND fecha_reprogramada = ? 
+       AND estado = 'aprobada'`,
+      [claseId, fecha]
     );
 
-    const esReprogramada = reprogramaciones.some(r => 
-      r.fecha_reprogramada === fecha && r.estado === 'aprobada'
-    );
+    const estaBloqueada = reprogramacionesOriginal.length > 0;
+    const esReprogramada = reprogramacionesReprogramada.length > 0;
+    
+    let reprogramacionInfo = null;
+    
+    if (estaBloqueada) {
+      reprogramacionInfo = {
+        id: reprogramacionesOriginal[0].id,
+        tipo: 'original_bloqueada',
+        fechaOriginal: reprogramacionesOriginal[0].fecha_original,
+        fechaReprogramada: reprogramacionesOriginal[0].fecha_reprogramada,
+        horario: {
+          horaInicio: reprogramacionesOriginal[0].hora_inicio,
+          horaFin: reprogramacionesOriginal[0].hora_fin,
+          diaSemana: reprogramacionesOriginal[0].dia_semana
+        },
+        yaTomada: reprogramacionesOriginal[0].ya_tomada === 1
+      };
+    } else if (esReprogramada) {
+      reprogramacionInfo = {
+        id: reprogramacionesReprogramada[0].id,
+        tipo: 'reprogramada',
+        fechaOriginal: reprogramacionesReprogramada[0].fecha_original,
+        fechaReprogramada: reprogramacionesReprogramada[0].fecha_reprogramada,
+        horario: {
+          horaInicio: reprogramacionesReprogramada[0].hora_inicio,
+          horaFin: reprogramacionesReprogramada[0].hora_fin,
+          diaSemana: reprogramacionesReprogramada[0].dia_semana
+        },
+        yaTomada: reprogramacionesReprogramada[0].ya_tomada === 1
+      };
+    }
 
-    const reprogramacionInfo = reprogramaciones[0] || null;
+    const puedeNombrarLista = !estaBloqueada && (!esReprogramada || (esReprogramada && !reprogramacionInfo?.yaTomada));
 
     res.json({
       claseId: parseInt(claseId),
       fecha,
       estaBloqueada,
       esReprogramada,
-      reprogramacion: reprogramacionInfo ? {
-        id: reprogramacionInfo.id,
-        estado: reprogramacionInfo.estado,
-        fechaOriginal: reprogramacionInfo.fecha_original,
-        fechaReprogramada: reprogramacionInfo.fecha_reprogramada
-      } : null
+      puedeNombrarLista,
+      yaTomada: reprogramacionInfo?.yaTomada || false,
+      reprogramacion: reprogramacionInfo
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
+exports.marcarReprogramacionTomada = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [reprogramacion] = await db.execute(
+      `SELECT * FROM reprogramaciones_clase WHERE id = ?`,
+      [id]
+    );
+
+    if (reprogramacion.length === 0) {
+      return res.status(404).json({ error: "Reprogramación no encontrada" });
+    }
+
+    if (reprogramacion[0].estado !== 'aprobada') {
+      return res.status(400).json({ error: "Solo se pueden marcar como tomadas las reprogramaciones aprobadas" });
+    }
+
+    if (reprogramacion[0].ya_tomada) {
+      return res.status(400).json({ error: "Esta reprogramación ya ha sido marcada como tomada" });
+    }
+
+    await db.execute(
+      `UPDATE reprogramaciones_clase SET ya_tomada = TRUE WHERE id = ?`,
+      [id]
+    );
+
+    res.json({ 
+      message: "Reprogramación marcada como tomada exitosamente",
+      reprogramacionId: parseInt(id)
     });
 
   } catch (error) {

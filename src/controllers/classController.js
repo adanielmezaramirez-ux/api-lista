@@ -114,9 +114,19 @@ exports.getClassById = async (req, res) => {
     clase.alumnos = alumnos;
 
     const [reprogramaciones] = await db.execute(
-      `SELECT id, fecha_original, fecha_reprogramada, estado
+      `SELECT 
+        id, 
+        fecha_original, 
+        fecha_reprogramada,
+        hora_inicio,
+        hora_fin,
+        dia_semana,
+        estado,
+        ya_tomada,
+        motivo
        FROM reprogramaciones_clase
-       WHERE clase_id = ? AND estado IN ('pendiente', 'aprobada')`,
+       WHERE clase_id = ? AND estado IN ('pendiente', 'aprobada')
+       ORDER BY created_at DESC`,
       [id]
     );
 

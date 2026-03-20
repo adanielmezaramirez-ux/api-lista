@@ -719,14 +719,23 @@ exports.descargarReporteExcel = async (req, res) => {
         a.presente,
         a.registrado_por,
         a.observacion,
+        rc.id as reprogramacion_id,
         rc.fecha_reprogramada,
-        rc.estado as estado_reprogramacion,
-        CONCAT(m.firstname, ' ', m.lastname) as maestro_nombre
+        rc.hora_inicio as hora_reprogramada_inicio,
+        rc.hora_fin as hora_reprogramada_fin,
+        rc.dia_semana as dia_reprogramado,
+        rc.ya_tomada,
+        rc.fecha_original as fecha_original_reprogramacion,
+        CONCAT(m.firstname, ' ', m.lastname) as maestro_nombre,
+        CASE 
+          WHEN a.reprogramacion_id IS NOT NULL THEN 'Sí'
+          ELSE 'No'
+        END as es_reprogramada
       FROM asistencia a
       JOIN clases c ON a.clase_id = c.id
       JOIN mdlwa_user u ON a.alumno_id = u.id
-      JOIN clase_maestros cm ON c.id = cm.clase_id
-      JOIN mdlwa_user m ON cm.maestro_id = m.id
+      LEFT JOIN clase_maestros cm ON c.id = cm.clase_id
+      LEFT JOIN mdlwa_user m ON cm.maestro_id = m.id
       LEFT JOIN reprogramaciones_clase rc ON a.reprogramacion_id = rc.id
       WHERE 1=1
     `;
@@ -761,9 +770,11 @@ exports.descargarReporteExcel = async (req, res) => {
       { header: 'Fecha', key: 'fecha', width: 15 },
       { header: 'Asistió', key: 'presente', width: 10 },
       { header: 'Registrado Por', key: 'registrado_por', width: 15 },
-      { header: 'Observación', key: 'observacion', width: 30 },
+      { header: 'Es Reprogramada', key: 'es_reprogramada', width: 15 },
+      { header: 'Fecha Original', key: 'fecha_original', width: 15 },
       { header: 'Fecha Reprogramada', key: 'fecha_reprogramada', width: 15 },
-      { header: 'Estado Reprogramación', key: 'estado_reprogramacion', width: 20 },
+      { header: 'Horario Reprogramado', key: 'horario_reprogramado', width: 20 },
+      { header: 'Observación', key: 'observacion', width: 40 },
       { header: 'Maestro', key: 'maestro', width: 30 }
     ];
 
@@ -776,32 +787,54 @@ exports.descargarReporteExcel = async (req, res) => {
     worksheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
 
     asistencias.forEach(a => {
+      let observacion = a.observacion || '';
+      let horarioReprogramado = '';
+      let fechaOriginal = '';
+      
+      if (a.reprogramacion_id) {
+        const fechaOriginalObj = new Date(a.fecha_original_reprogramacion || a.fecha);
+        const fechaOriginalFormateada = fechaOriginalObj.toLocaleDateString('es-MX');
+        const horaInicio = a.hora_reprogramada_inicio ? a.hora_reprogramada_inicio.substring(0,5) : '';
+        const horaFin = a.hora_reprogramada_fin ? a.hora_reprogramada_fin.substring(0,5) : '';
+        
+        horarioReprogramado = `${horaInicio} - ${horaFin}`;
+        fechaOriginal = fechaOriginalFormateada;
+        
+        if (!observacion) {
+          observacion = `Esta es la asistencia de la clase original del ${fechaOriginalFormateada}`;
+        }
+      }
+
       worksheet.addRow({
         clase: a.clase_nombre,
         alumno: `${a.alumno_nombre} ${a.alumno_apellido}`,
         fecha: a.fecha,
         presente: a.presente ? 'Sí' : 'No',
         registrado_por: a.registrado_por,
-        observacion: a.observacion || '',
+        es_reprogramada: a.es_reprogramada,
+        fecha_original: fechaOriginal,
         fecha_reprogramada: a.fecha_reprogramada || '',
-        estado_reprogramacion: a.estado_reprogramacion || '',
+        horario_reprogramado: horarioReprogramado,
+        observacion: observacion,
         maestro: a.maestro_nombre
       });
     });
 
     worksheet.addRow([]);
-    worksheet.addRow(['Resumen', '', '', '', '', '', '', '', '']);
-    worksheet.addRow(['Total registros:', asistencias.length, '', '', '', '', '', '', '']);
+    worksheet.addRow(['Resumen', '', '', '', '', '', '', '', '', '', '']);
+    worksheet.addRow(['Total registros:', asistencias.length, '', '', '', '', '', '', '', '', '']);
     
     const presentes = asistencias.filter(a => a.presente).length;
-    worksheet.addRow(['Total asistencias:', presentes, '', '', '', '', '', '', '']);
+    worksheet.addRow(['Total asistencias:', presentes, '', '', '', '', '', '', '', '', '']);
     const sistema = asistencias.filter(a => a.registrado_por === 'sistema').length;
-    worksheet.addRow(['Registradas por sistema:', sistema, '', '', '', '', '', '', '']);
+    worksheet.addRow(['Registradas por sistema:', sistema, '', '', '', '', '', '', '', '', '']);
     const maestro = asistencias.filter(a => a.registrado_por === 'maestro').length;
-    worksheet.addRow(['Registradas por maestro:', maestro, '', '', '', '', '', '', '']);
+    worksheet.addRow(['Registradas por maestro:', maestro, '', '', '', '', '', '', '', '', '']);
+    const reprogramadas = asistencias.filter(a => a.reprogramacion_id).length;
+    worksheet.addRow(['Clases reprogramadas:', reprogramadas, '', '', '', '', '', '', '', '', '']);
     
     if (asistencias.length > 0) {
-      worksheet.addRow(['Porcentaje asistencia:', `${((presentes / asistencias.length) * 100).toFixed(2)}%`, '', '', '', '', '', '', '']);
+      worksheet.addRow(['Porcentaje asistencia:', `${((presentes / asistencias.length) * 100).toFixed(2)}%`, '', '', '', '', '', '', '', '', '']);
     }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -829,14 +862,22 @@ exports.descargarReportePDF = async (req, res) => {
         a.presente,
         a.registrado_por,
         a.observacion,
+        rc.id as reprogramacion_id,
         rc.fecha_reprogramada,
-        rc.estado as estado_reprogramacion,
-        CONCAT(m.firstname, ' ', m.lastname) as maestro_nombre
+        rc.hora_inicio as hora_reprogramada_inicio,
+        rc.hora_fin as hora_reprogramada_fin,
+        rc.dia_semana as dia_reprogramado,
+        rc.fecha_original as fecha_original_reprogramacion,
+        CONCAT(m.firstname, ' ', m.lastname) as maestro_nombre,
+        CASE 
+          WHEN a.reprogramacion_id IS NOT NULL THEN 'Sí'
+          ELSE 'No'
+        END as es_reprogramada
       FROM asistencia a
       JOIN clases c ON a.clase_id = c.id
       JOIN mdlwa_user u ON a.alumno_id = u.id
-      JOIN clase_maestros cm ON c.id = cm.clase_id
-      JOIN mdlwa_user m ON cm.maestro_id = m.id
+      LEFT JOIN clase_maestros cm ON c.id = cm.clase_id
+      LEFT JOIN mdlwa_user m ON cm.maestro_id = m.id
       LEFT JOIN reprogramaciones_clase rc ON a.reprogramacion_id = rc.id
       WHERE 1=1
     `;
@@ -886,16 +927,19 @@ exports.descargarReportePDF = async (req, res) => {
     const tableTop = 150;
     const itemSpacing = 20;
     
-    doc.fontSize(8).font('Helvetica-Bold');
+    doc.fontSize(7).font('Helvetica-Bold');
     doc.text('Clase', 50, tableTop);
-    doc.text('Alumno', 150, tableTop);
-    doc.text('Fecha', 250, tableTop);
-    doc.text('Asistió', 300, tableTop);
-    doc.text('Registró', 330, tableTop);
-    doc.text('Observación', 380, tableTop);
-    doc.text('Maestro', 500, tableTop);
+    doc.text('Alumno', 130, tableTop);
+    doc.text('Fecha', 210, tableTop);
+    doc.text('Asistió', 250, tableTop);
+    doc.text('Registró', 280, tableTop);
+    doc.text('Reprog.', 310, tableTop);
+    doc.text('Fecha Original', 340, tableTop);
+    doc.text('Horario Reprog.', 400, tableTop);
+    doc.text('Observación', 470, tableTop);
+    doc.text('Maestro', 550, tableTop);
 
-    doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
+    doc.moveTo(50, tableTop + 15).lineTo(600, tableTop + 15).stroke();
 
     let yPosition = tableTop + 25;
     doc.font('Helvetica');
@@ -903,20 +947,59 @@ exports.descargarReportePDF = async (req, res) => {
     let totalPresentes = 0;
     let totalSistema = 0;
     let totalMaestro = 0;
+    let totalReprogramadas = 0;
 
     asistencias.forEach((a, i) => {
       if (yPosition > 550) {
         doc.addPage();
         yPosition = 50;
+        
+        doc.fontSize(7).font('Helvetica-Bold');
+        doc.text('Clase', 50, yPosition);
+        doc.text('Alumno', 130, yPosition);
+        doc.text('Fecha', 210, yPosition);
+        doc.text('Asistió', 250, yPosition);
+        doc.text('Registró', 280, yPosition);
+        doc.text('Reprog.', 310, yPosition);
+        doc.text('Fecha Original', 340, yPosition);
+        doc.text('Horario Reprog.', 400, yPosition);
+        doc.text('Observación', 470, yPosition);
+        doc.text('Maestro', 550, yPosition);
+        
+        doc.moveTo(50, yPosition + 15).lineTo(600, yPosition + 15).stroke();
+        yPosition += 25;
+        doc.font('Helvetica');
       }
 
-      doc.fontSize(7).text(a.clase_nombre.substring(0, 15), 50, yPosition);
-      doc.text(`${a.alumno_nombre} ${a.alumno_apellido}`.substring(0, 15), 150, yPosition);
-      doc.text(new Date(a.fecha).toLocaleDateString(), 250, yPosition);
-      doc.text(a.presente ? 'Sí' : 'No', 300, yPosition);
-      doc.text(a.registrado_por, 330, yPosition);
-      doc.text((a.observacion || '').substring(0, 20), 380, yPosition);
-      doc.text(a.maestro_nombre.substring(0, 15), 500, yPosition);
+      let observacion = a.observacion || '';
+      let horarioReprogramado = '';
+      let fechaOriginal = '';
+      
+      if (a.reprogramacion_id) {
+        totalReprogramadas++;
+        const fechaOriginalObj = new Date(a.fecha_original_reprogramacion || a.fecha);
+        const fechaOriginalFormateada = fechaOriginalObj.toLocaleDateString('es-MX');
+        const horaInicio = a.hora_reprogramada_inicio ? a.hora_reprogramada_inicio.substring(0,5) : '';
+        const horaFin = a.hora_reprogramada_fin ? a.hora_reprogramada_fin.substring(0,5) : '';
+        
+        horarioReprogramado = `${horaInicio}-${horaFin}`;
+        fechaOriginal = fechaOriginalFormateada;
+        
+        if (!observacion) {
+          observacion = `Asistencia de clase original ${fechaOriginalFormateada}`;
+        }
+      }
+
+      doc.fontSize(6).text(a.clase_nombre.substring(0, 12), 50, yPosition);
+      doc.text(`${a.alumno_nombre} ${a.alumno_apellido}`.substring(0, 12), 130, yPosition);
+      doc.text(new Date(a.fecha).toLocaleDateString(), 210, yPosition);
+      doc.text(a.presente ? 'Sí' : 'No', 250, yPosition);
+      doc.text(a.registrado_por, 280, yPosition);
+      doc.text(a.es_reprogramada, 310, yPosition);
+      doc.text(fechaOriginal.substring(0, 10), 340, yPosition);
+      doc.text(horarioReprogramado, 400, yPosition);
+      doc.text(observacion.substring(0, 15), 470, yPosition);
+      doc.text(a.maestro_nombre ? a.maestro_nombre.substring(0, 10) : '', 550, yPosition);
 
       if (a.presente) totalPresentes++;
       if (a.registrado_por === 'sistema') totalSistema++;
@@ -926,15 +1009,16 @@ exports.descargarReportePDF = async (req, res) => {
     });
 
     doc.moveDown(2);
-    doc.font('Helvetica-Bold').fontSize(10);
+    doc.font('Helvetica-Bold').fontSize(9);
     doc.text('RESUMEN:', 50, yPosition + 20);
-    doc.font('Helvetica').fontSize(9);
-    doc.text(`Total registros: ${asistencias.length}`, 50, yPosition + 40);
-    doc.text(`Total asistencias: ${totalPresentes}`, 50, yPosition + 55);
-    doc.text(`Registradas por sistema: ${totalSistema}`, 50, yPosition + 70);
-    doc.text(`Registradas por maestro: ${totalMaestro}`, 50, yPosition + 85);
+    doc.font('Helvetica').fontSize(8);
+    doc.text(`Total registros: ${asistencias.length}`, 50, yPosition + 35);
+    doc.text(`Total asistencias: ${totalPresentes}`, 50, yPosition + 50);
+    doc.text(`Registradas por sistema: ${totalSistema}`, 50, yPosition + 65);
+    doc.text(`Registradas por maestro: ${totalMaestro}`, 50, yPosition + 80);
+    doc.text(`Clases reprogramadas: ${totalReprogramadas}`, 50, yPosition + 95);
     if (asistencias.length > 0) {
-      doc.text(`Porcentaje asistencia: ${((totalPresentes / asistencias.length) * 100).toFixed(2)}%`, 50, yPosition + 100);
+      doc.text(`Porcentaje asistencia: ${((totalPresentes / asistencias.length) * 100).toFixed(2)}%`, 50, yPosition + 110);
     }
 
     doc.end();
