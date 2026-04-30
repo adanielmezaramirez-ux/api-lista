@@ -1,22 +1,28 @@
 const db = require("../config/db");
 
+const getDiaSemanaDesFecha = (fechaStr) => {
+  const fecha = new Date(fechaStr + "T12:00:00");
+  const jsDay = fecha.getDay();
+  return jsDay === 0 ? 7 : jsDay;
+};
+
 exports.solicitarReprogramacion = async (req, res) => {
   try {
-    const { 
-      claseId, 
-      horarioOriginalId, 
-      fechaOriginal, 
+    const {
+      claseId,
+      horarioOriginalId,
+      fechaOriginal,
       fechaReprogramada,
       horaInicio,
       horaFin,
       diaSemana,
-      motivo 
+      motivo
     } = req.body;
 
-    if (!claseId || !horarioOriginalId || !fechaOriginal || !fechaReprogramada || 
+    if (!claseId || !horarioOriginalId || !fechaOriginal || !fechaReprogramada ||
         !horaInicio || !horaFin || !diaSemana) {
-      return res.status(400).json({ 
-        error: "Todos los campos son requeridos: claseId, horarioOriginalId, fechaOriginal, fechaReprogramada, horaInicio, horaFin, diaSemana" 
+      return res.status(400).json({
+        error: "Todos los campos son requeridos: claseId, horarioOriginalId, fechaOriginal, fechaReprogramada, horaInicio, horaFin, diaSemana"
       });
     }
 
@@ -38,15 +44,24 @@ exports.solicitarReprogramacion = async (req, res) => {
       return res.status(400).json({ error: "Horario no válido para esta clase" });
     }
 
+    const diaFechaOriginal = getDiaSemanaDesFecha(fechaOriginal);
+    if (diaFechaOriginal !== horario[0].dia_semana) {
+      return res.status(400).json({
+        error: `La fecha original no corresponde al día del horario seleccionado. El horario es de ${horario[0].dia_semana === 1 ? 'Lunes' : horario[0].dia_semana === 2 ? 'Martes' : horario[0].dia_semana === 3 ? 'Miércoles' : horario[0].dia_semana === 4 ? 'Jueves' : horario[0].dia_semana === 5 ? 'Viernes' : horario[0].dia_semana === 6 ? 'Sábado' : 'Domingo'}.`
+      });
+    }
+
+    if (fechaReprogramada <= fechaOriginal) {
+      return res.status(400).json({ error: "La fecha reprogramada debe ser posterior a la fecha original" });
+    }
+
     if (diaSemana < 1 || diaSemana > 7) {
       return res.status(400).json({ error: "dia_semana debe ser entre 1 (Lunes) y 7 (Domingo)" });
     }
 
     const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/;
     if (!timeRegex.test(horaInicio) || !timeRegex.test(horaFin)) {
-      return res.status(400).json({ 
-        error: "Formato de hora inválido. Use HH:MM:SS" 
-      });
+      return res.status(400).json({ error: "Formato de hora inválido. Use HH:MM:SS" });
     }
 
     const [existente] = await db.execute(
@@ -65,7 +80,7 @@ exports.solicitarReprogramacion = async (req, res) => {
        (clase_id, horario_original_id, fecha_original, fecha_reprogramada, 
         hora_inicio, hora_fin, dia_semana, motivo, solicitado_por, estado)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')`,
-      [claseId, horarioOriginalId, fechaOriginal, fechaReprogramada, 
+      [claseId, horarioOriginalId, fechaOriginal, fechaReprogramada,
        horaInicio, horaFin, diaSemana, motivo || null, req.user.id]
     );
 
@@ -82,7 +97,7 @@ exports.solicitarReprogramacion = async (req, res) => {
         horaFin,
         diaSemana,
         motivo: motivo || null,
-        estado: 'pendiente'
+        estado: "pendiente"
       }
     });
 
@@ -97,7 +112,7 @@ exports.procesarReprogramacion = async (req, res) => {
     const { id } = req.params;
     const { estado } = req.body;
 
-    if (!['aprobada', 'rechazada'].includes(estado)) {
+    if (!["aprobada", "rechazada"].includes(estado)) {
       return res.status(400).json({ error: "Estado debe ser 'aprobada' o 'rechazada'" });
     }
 
@@ -117,7 +132,7 @@ exports.procesarReprogramacion = async (req, res) => {
       return res.status(404).json({ error: "Solicitud no encontrada" });
     }
 
-    if (solicitud[0].estado !== 'pendiente') {
+    if (solicitud[0].estado !== "pendiente") {
       return res.status(400).json({ error: "Esta solicitud ya fue procesada" });
     }
 
@@ -132,7 +147,7 @@ exports.procesarReprogramacion = async (req, res) => {
         [estado, req.user.id, id]
       );
 
-      if (estado === 'aprobada') {
+      if (estado === "aprobada") {
         const [alumnos] = await connection.execute(
           "SELECT alumno_id FROM clase_alumnos WHERE clase_id = ?",
           [solicitud[0].clase_id]
@@ -154,7 +169,7 @@ exports.procesarReprogramacion = async (req, res) => {
               alumno.alumno_id,
               solicitud[0].fecha_original,
               0,
-              `Clase reprogramada para el ${solicitud[0].fecha_reprogramada} a las ${solicitud[0].hora_inicio.substring(0,5)}`,
+              `Clase reprogramada para el ${solicitud[0].fecha_reprogramada} a las ${solicitud[0].hora_inicio.substring(0, 5)}`,
               id
             ]
           );
@@ -162,8 +177,8 @@ exports.procesarReprogramacion = async (req, res) => {
       }
 
       await connection.commit();
-      
-      res.json({ 
+
+      res.json({
         message: `Solicitud ${estado} correctamente`,
         solicitud: solicitud[0]
       });
@@ -184,7 +199,7 @@ exports.procesarReprogramacion = async (req, res) => {
 exports.getReprogramaciones = async (req, res) => {
   try {
     const { estado, claseId } = req.query;
-    
+
     let query = `
       SELECT 
         rc.*,
@@ -214,7 +229,7 @@ exports.getReprogramaciones = async (req, res) => {
       params.push(claseId);
     }
 
-    if (req.user.roles.includes('maestro') && !req.user.roles.includes('admin')) {
+    if (req.user.roles.includes("maestro") && !req.user.roles.includes("admin")) {
       query += ` AND rc.clase_id IN (SELECT clase_id FROM clase_maestros WHERE maestro_id = ?)`;
       params.push(req.user.id);
     }
@@ -222,7 +237,7 @@ exports.getReprogramaciones = async (req, res) => {
     query += ` ORDER BY rc.created_at DESC`;
 
     const [reprogramaciones] = await db.execute(query, params);
-    
+
     res.json(reprogramaciones);
 
   } catch (error) {
@@ -236,9 +251,7 @@ exports.marcarAsistenciaReprogramada = async (req, res) => {
     const { reprogramacionId, alumnoId, presente } = req.body;
 
     if (!reprogramacionId || !alumnoId) {
-      return res.status(400).json({ 
-        error: "reprogramacionId y alumnoId son requeridos" 
-      });
+      return res.status(400).json({ error: "reprogramacionId y alumnoId son requeridos" });
     }
 
     const [reprogramacion] = await db.execute(
@@ -254,7 +267,7 @@ exports.marcarAsistenciaReprogramada = async (req, res) => {
     }
 
     const esMaestroClase = reprogramacion.some(r => r.maestro_id === req.user.id);
-    if (!esMaestroClase && !req.user.roles.includes('admin')) {
+    if (!esMaestroClase && !req.user.roles.includes("admin")) {
       return res.status(403).json({ error: "No tienes permiso para esta clase" });
     }
 
@@ -280,21 +293,19 @@ exports.marcarAsistenciaReprogramada = async (req, res) => {
           alumnoId,
           reprogramacion[0].fecha_reprogramada,
           presente ? 1 : 0,
-          'maestro',
+          "maestro",
           reprogramacionId
         ]
       );
 
       await connection.execute(
-        `UPDATE reprogramaciones_clase 
-         SET ya_tomada = TRUE 
-         WHERE id = ?`,
+        `UPDATE reprogramaciones_clase SET ya_tomada = TRUE WHERE id = ?`,
         [reprogramacionId]
       );
 
       await connection.commit();
-      
-      res.json({ 
+
+      res.json({
         message: "Asistencia en clase reprogramada registrada correctamente",
         reprogramacionId
       });
@@ -320,7 +331,6 @@ exports.verificarClaseReprogramada = async (req, res) => {
       return res.status(400).json({ error: "claseId y fecha son requeridos" });
     }
 
-    // Verificar si hay una reprogramación aprobada para esta fecha (como fecha original)
     const [reprogramacionesOriginal] = await db.execute(
       `SELECT id, fecha_original, fecha_reprogramada, estado, ya_tomada,
               hora_inicio, hora_fin, dia_semana
@@ -330,7 +340,6 @@ exports.verificarClaseReprogramada = async (req, res) => {
       [claseId, fecha]
     );
 
-    // Verificar si hay una reprogramación aprobada para esta fecha (como fecha reprogramada)
     const [reprogramacionesReprogramada] = await db.execute(
       `SELECT id, fecha_original, fecha_reprogramada, estado, ya_tomada,
               hora_inicio, hora_fin, dia_semana
@@ -342,13 +351,13 @@ exports.verificarClaseReprogramada = async (req, res) => {
 
     const estaBloqueada = reprogramacionesOriginal.length > 0;
     const esReprogramada = reprogramacionesReprogramada.length > 0;
-    
+
     let reprogramacionInfo = null;
-    
+
     if (estaBloqueada) {
       reprogramacionInfo = {
         id: reprogramacionesOriginal[0].id,
-        tipo: 'original_bloqueada',
+        tipo: "original_bloqueada",
         fechaOriginal: reprogramacionesOriginal[0].fecha_original,
         fechaReprogramada: reprogramacionesOriginal[0].fecha_reprogramada,
         horario: {
@@ -361,7 +370,7 @@ exports.verificarClaseReprogramada = async (req, res) => {
     } else if (esReprogramada) {
       reprogramacionInfo = {
         id: reprogramacionesReprogramada[0].id,
-        tipo: 'reprogramada',
+        tipo: "reprogramada",
         fechaOriginal: reprogramacionesReprogramada[0].fecha_original,
         fechaReprogramada: reprogramacionesReprogramada[0].fecha_reprogramada,
         horario: {
@@ -404,7 +413,7 @@ exports.marcarReprogramacionTomada = async (req, res) => {
       return res.status(404).json({ error: "Reprogramación no encontrada" });
     }
 
-    if (reprogramacion[0].estado !== 'aprobada') {
+    if (reprogramacion[0].estado !== "aprobada") {
       return res.status(400).json({ error: "Solo se pueden marcar como tomadas las reprogramaciones aprobadas" });
     }
 
@@ -417,7 +426,7 @@ exports.marcarReprogramacionTomada = async (req, res) => {
       [id]
     );
 
-    res.json({ 
+    res.json({
       message: "Reprogramación marcada como tomada exitosamente",
       reprogramacionId: parseInt(id)
     });
